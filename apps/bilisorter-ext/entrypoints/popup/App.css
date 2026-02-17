@@ -965,6 +965,21 @@ body {
   border-color: #00a1d6;
 }
 
+.folder-chip.default-folder-chip {
+  opacity: 0.6;
+  cursor: default;
+  border-style: dashed;
+}
+
+.folder-chip.default-folder-chip:hover {
+  border-color: #444;
+}
+
+.folder-chip.default-folder-chip .chip-drag-handle.disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .folder-chip.dragging {
   opacity: 0.4;
 }

@@ -24,6 +24,7 @@ export interface Folder {
   id: number;
   name: string;
   media_count: number;
+  attr: number; // 0 = normal, non-0 = default (pinned)
   sampleTitles: string[];
 }
 
@@ -154,6 +155,7 @@ export interface BiliFolderListResponse {
       id: number;
       title: string;
       media_count: number;
+      attr: number;
     }>;
   };
 }

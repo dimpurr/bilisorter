@@ -163,6 +163,10 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+  // Ensure folders have attr field (safe default for old cached data)
+  const safeFolders = (list: Folder[]) =>
+    list.map((f, i) => ({ ...f, attr: f.attr ?? (i === 0 ? 1 : 0) }));
+
   // Fetch fresh folder list from B站 API on open
   useEffect(() => {
     if (!isOpen) return;
@@ -173,17 +177,17 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
     chrome.runtime.sendMessage({ type: 'FETCH_FOLDERS_FRESH' }).then((response) => {
       if (cancelled) return;
       if (response?.success && response.folders) {
-        setLocalFolders(response.folders);
+        setLocalFolders(safeFolders(response.folders));
         setStatusMessage(null);
       } else {
         // Fallback to cached folders
-        setLocalFolders(folders);
+        setLocalFolders(safeFolders(folders));
         setStatusMessage('⚠️ 加载失败，使用缓存数据');
       }
       setIsLoading(false);
     }).catch(() => {
       if (cancelled) return;
-      setLocalFolders(folders);
+      setLocalFolders(safeFolders(folders));
       setStatusMessage('⚠️ 加载失败，使用缓存数据');
       setIsLoading(false);
     });
@@ -210,8 +214,12 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
     })
   );
 
+  // Separate default folder (pinned) from sortable folders
+  const defaultFolder = localFolders.find((f) => f.attr !== 0) ?? null;
+  const sortableFolders = localFolders.filter((f) => f.attr === 0);
+
   const activeFolder = activeId
-    ? localFolders.find((f) => f.id === activeId)
+    ? sortableFolders.find((f) => f.id === activeId)
     : null;
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
@@ -225,18 +233,22 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
 
       if (!over || active.id === over.id) return;
 
-      const oldIndex = localFolders.findIndex((f) => f.id === active.id);
-      const newIndex = localFolders.findIndex((f) => f.id === over.id);
+      const oldIndex = sortableFolders.findIndex((f) => f.id === active.id);
+      const newIndex = sortableFolders.findIndex((f) => f.id === over.id);
 
       if (oldIndex === -1 || newIndex === -1) return;
 
-      const newOrder = arrayMove(localFolders, oldIndex, newIndex);
-      setLocalFolders(newOrder);
+      const newSortableOrder = arrayMove(sortableFolders, oldIndex, newIndex);
+      // Reconstruct full list: default folder first, then sorted folders
+      const fullList = defaultFolder
+        ? [defaultFolder, ...newSortableOrder]
+        : newSortableOrder;
+      setLocalFolders(fullList);
 
       // Call parent — this triggers the API call
       setStatusMessage('正在保存排序...');
       try {
-        onFoldersReorder(newOrder);
+        onFoldersReorder(fullList);
         setStatusMessage('✅ 排序已保存');
       } catch {
         // Revert on error
@@ -244,12 +256,12 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
         setStatusMessage('❌ 排序保存失败');
       }
     },
-    [localFolders, onFoldersReorder]
+    [localFolders, sortableFolders, defaultFolder, onFoldersReorder]
   );
 
   const handleEditStart = useCallback((folderId: number) => {
     const folder = localFolders.find((f) => f.id === folderId);
-    if (!folder) return;
+    if (!folder || folder.attr !== 0) return; // Cannot rename default folder
     setEditingId(folderId);
     setEditValue(folder.name);
   }, [localFolders]);
@@ -322,39 +334,55 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
               <p>没有收藏夹，请先索引</p>
             </div>
           ) : (
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragStart={handleDragStart}
-              onDragEnd={handleDragEnd}
-            >
-              <SortableContext
-                items={localFolders.map((f) => f.id)}
-                strategy={rectSortingStrategy}
-              >
+            <>
+              {/* Default folder — pinned, not draggable */}
+              {defaultFolder && (
                 <div className="folder-chip-grid">
-                  {localFolders.map((folder) => (
-                    <SortableChip
-                      key={folder.id}
-                      folder={folder}
-                      isEditing={editingId === folder.id}
-                      editValue={editingId === folder.id ? editValue : ''}
-                      onEditStart={handleEditStart}
-                      onEditChange={setEditValue}
-                      onEditSave={handleEditSave}
-                      onEditCancel={handleEditCancel}
-                      isSaving={isSaving && editingId === folder.id}
-                    />
-                  ))}
+                  <div className="folder-chip default-folder-chip">
+                    <span className="chip-drag-handle disabled" title="默认收藏夹无法排序">📌</span>
+                    <span className="chip-name" title={defaultFolder.name}>
+                      {defaultFolder.name}
+                    </span>
+                    <span className="chip-count">{defaultFolder.media_count}</span>
+                  </div>
                 </div>
-              </SortableContext>
+              )}
 
-              <DragOverlay>
-                {activeFolder ? (
-                  <DragOverlayChip folder={activeFolder} />
-                ) : null}
-              </DragOverlay>
-            </DndContext>
+              {/* Sortable folders */}
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragStart={handleDragStart}
+                onDragEnd={handleDragEnd}
+              >
+                <SortableContext
+                  items={sortableFolders.map((f) => f.id)}
+                  strategy={rectSortingStrategy}
+                >
+                  <div className="folder-chip-grid">
+                    {sortableFolders.map((folder) => (
+                      <SortableChip
+                        key={folder.id}
+                        folder={folder}
+                        isEditing={editingId === folder.id}
+                        editValue={editingId === folder.id ? editValue : ''}
+                        onEditStart={handleEditStart}
+                        onEditChange={setEditValue}
+                        onEditSave={handleEditSave}
+                        onEditCancel={handleEditCancel}
+                        isSaving={isSaving && editingId === folder.id}
+                      />
+                    ))}
+                  </div>
+                </SortableContext>
+
+                <DragOverlay>
+                  {activeFolder ? (
+                    <DragOverlayChip folder={activeFolder} />
+                  ) : null}
+                </DragOverlay>
+              </DndContext>
+            </>
           )}
         </div>
 
