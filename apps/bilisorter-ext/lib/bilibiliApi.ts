@@ -408,6 +408,8 @@ export async function sortFolders(
         headers: {
           ...headers,
           'Content-Length': '0',
+          Referer: 'https://space.bilibili.com',
+          Origin: 'https://space.bilibili.com',
         },
       }
     );
@@ -455,6 +457,8 @@ export async function renameFolder(
         headers: {
           ...headers,
           'Content-Type': 'application/x-www-form-urlencoded',
+          Referer: 'https://space.bilibili.com',
+          Origin: 'https://space.bilibili.com',
         },
         body: formData.toString(),
       }

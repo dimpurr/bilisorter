@@ -481,10 +481,10 @@ const App: React.FC = () => {
 
   // ─── Folder Manager Handlers ───
 
-  const handleFoldersReorder = useCallback(async (newFolders: Folder[]) => {
+  const handleFoldersReorder = useCallback(async (newFolders: Folder[]): Promise<boolean> => {
     setFolders(newFolders);
-    // Skip default folder (always first) — B站 API doesn't allow sorting it
-    const folderIds = newFolders.slice(1).map(f => f.id);
+    // Send ALL folder IDs including the default one — B站 sort API requires complete list
+    const folderIds = newFolders.map(f => f.id);
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'SORT_FOLDERS',
@@ -492,9 +492,12 @@ const App: React.FC = () => {
       });
       if (!response?.success) {
         console.error('[App] Sort folders failed:', response?.error);
+        return false;
       }
+      return true;
     } catch (error) {
       console.error('[App] Sort folders error:', error);
+      return false;
     }
   }, []);
 

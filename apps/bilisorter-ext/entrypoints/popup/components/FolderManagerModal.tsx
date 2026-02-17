@@ -25,7 +25,7 @@ import type { Folder } from '../../../lib/types';
 interface FolderManagerModalProps {
   isOpen: boolean;
   folders: Folder[];
-  onFoldersReorder: (folders: Folder[]) => void;
+  onFoldersReorder: (folders: Folder[]) => Promise<boolean>;
   onFolderRename: (folderId: number, newName: string) => Promise<boolean>;
   onClose: () => void;
 }
@@ -244,8 +244,13 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
       // Call parent — this triggers the API call
       setStatusMessage('正在保存排序...');
       try {
-        onFoldersReorder(fullList);
-        setStatusMessage('✅ 排序已保存');
+        const success = await onFoldersReorder(fullList);
+        if (success) {
+          setStatusMessage('✅ 排序已保存');
+        } else {
+          setLocalFolders(localFolders);
+          setStatusMessage('❌ 排序保存失败');
+        }
       } catch {
         // Revert on error
         setLocalFolders(localFolders);
@@ -307,13 +312,17 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
 
   // ─── One-click sort helpers ───
 
-  const applySort = useCallback((sorted: Folder[]) => {
+  const applySort = useCallback(async (sorted: Folder[]) => {
     const fullList = defaultFolder ? [defaultFolder, ...sorted] : sorted;
     setLocalFolders(fullList);
     setStatusMessage('正在保存排序...');
     try {
-      onFoldersReorder(fullList);
-      setStatusMessage('✅ 排序已保存');
+      const success = await onFoldersReorder(fullList);
+      if (success) {
+        setStatusMessage('✅ 排序已保存');
+      } else {
+        setStatusMessage('❌ 排序保存失败');
+      }
     } catch {
       setStatusMessage('❌ 排序保存失败');
     }
