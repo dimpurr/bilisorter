@@ -19,6 +19,7 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
 }) => {
   const [localSettings, setLocalSettings] = useState<Settings>(settings);
   const [showApiKey, setShowApiKey] = useState(false);
+  const [showGeminiKey, setShowGeminiKey] = useState(false);
 
   // Update local settings when props change
   useEffect(() => {
@@ -35,6 +36,21 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
     return () => clearTimeout(timer);
   }, [localSettings, settings, onSettingsChange]);
+
+  const handleProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setLocalSettings((prev) => ({
+      ...prev,
+      provider: e.target.value as Settings['provider'],
+    }));
+  };
+
+  const handleGeminiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setLocalSettings((prev) => ({ ...prev, geminiApiKey: e.target.value }));
+  };
+
+  const handleGeminiModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    setLocalSettings((prev) => ({ ...prev, geminiModel: e.target.value }));
+  };
 
   const handleApiKeyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setLocalSettings((prev) => ({ ...prev, apiKey: e.target.value }));
@@ -62,6 +78,9 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   if (!isOpen) return null;
 
+  const isGemini = localSettings.provider === 'gemini';
+  const activeKey = isGemini ? localSettings.geminiApiKey : localSettings.apiKey;
+
   return (
     <div className="settings-panel-overlay" onClick={onClose}>
       <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
@@ -73,46 +92,102 @@ const SettingsPanel: React.FC<SettingsPanelProps> = ({
         </div>
 
         <div className="settings-content">
-          {/* API Key */}
+          {/* Provider Selection */}
           <div className="settings-section">
-            <label htmlFor="api-key">Claude API Key</label>
-            <div className="input-group">
-              <input
-                id="api-key"
-                type={showApiKey ? 'text' : 'password'}
-                value={localSettings.apiKey}
-                onChange={handleApiKeyChange}
-                placeholder="sk-ant-api03-..."
-                className={!localSettings.apiKey ? 'warning' : ''}
-              />
-              <button
-                type="button"
-                className="toggle-visibility"
-                onClick={() => setShowApiKey(!showApiKey)}
-              >
-                {showApiKey ? '🙈' : '👁️'}
-              </button>
-            </div>
-            {!localSettings.apiKey && (
-              <p className="hint warning">需要 API Key 才能使用 AI 分类功能</p>
-            )}
+            <label htmlFor="provider">AI 服务商</label>
+            <select id="provider" value={localSettings.provider || 'gemini'} onChange={handleProviderChange}>
+              <option value="gemini">Google Gemini (推荐)</option>
+              <option value="claude">Anthropic Claude</option>
+            </select>
           </div>
 
-          {/* Model Selection */}
-          <div className="settings-section">
-            <label htmlFor="model">AI 模型</label>
-            <select id="model" value={localSettings.model} onChange={handleModelChange}>
-              <option value="claude-3-5-haiku-latest">
-                Claude 3.5 Haiku (推荐 - 快速经济)
-              </option>
-              <option value="claude-sonnet-4-latest">
-                Claude 4 Sonnet (更智能)
-              </option>
-            </select>
-            <p className="hint">
-              Haiku 足够准确且更快速，推荐日常使用
-            </p>
-          </div>
+          {/* Gemini Settings */}
+          {isGemini && (
+            <>
+              <div className="settings-section">
+                <label htmlFor="gemini-key">Gemini API Key</label>
+                <div className="input-group">
+                  <input
+                    id="gemini-key"
+                    type={showGeminiKey ? 'text' : 'password'}
+                    value={localSettings.geminiApiKey}
+                    onChange={handleGeminiKeyChange}
+                    placeholder="AIza..."
+                    className={!localSettings.geminiApiKey ? 'warning' : ''}
+                  />
+                  <button
+                    type="button"
+                    className="toggle-visibility"
+                    onClick={() => setShowGeminiKey(!showGeminiKey)}
+                  >
+                    {showGeminiKey ? '🙈' : '👁️'}
+                  </button>
+                </div>
+                {!localSettings.geminiApiKey && (
+                  <p className="hint warning">需要 API Key 才能使用 AI 分类功能</p>
+                )}
+                <p className="hint">
+                  从 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" style={{color: '#00a1d6'}}>AI Studio</a> 获取免费 API Key
+                </p>
+              </div>
+
+              <div className="settings-section">
+                <label htmlFor="gemini-model">Gemini 模型</label>
+                <select id="gemini-model" value={localSettings.geminiModel || 'gemini-3-flash-preview'} onChange={handleGeminiModelChange}>
+                  <option value="gemini-3-flash-preview">
+                    Gemini 3 Flash Preview (推荐 - 最新)
+                  </option>
+                  <option value="gemini-2.5-flash-preview-05-20">
+                    Gemini 2.5 Flash Preview
+                  </option>
+                  <option value="gemini-2.0-flash">
+                    Gemini 2.0 Flash (稳定)
+                  </option>
+                </select>
+              </div>
+            </>
+          )}
+
+          {/* Claude Settings */}
+          {!isGemini && (
+            <>
+              <div className="settings-section">
+                <label htmlFor="api-key">Claude API Key</label>
+                <div className="input-group">
+                  <input
+                    id="api-key"
+                    type={showApiKey ? 'text' : 'password'}
+                    value={localSettings.apiKey}
+                    onChange={handleApiKeyChange}
+                    placeholder="sk-ant-api03-..."
+                    className={!localSettings.apiKey ? 'warning' : ''}
+                  />
+                  <button
+                    type="button"
+                    className="toggle-visibility"
+                    onClick={() => setShowApiKey(!showApiKey)}
+                  >
+                    {showApiKey ? '🙈' : '👁️'}
+                  </button>
+                </div>
+                {!localSettings.apiKey && (
+                  <p className="hint warning">需要 API Key 才能使用 AI 分类功能</p>
+                )}
+              </div>
+
+              <div className="settings-section">
+                <label htmlFor="model">Claude 模型</label>
+                <select id="model" value={localSettings.model} onChange={handleModelChange}>
+                  <option value="claude-3-5-haiku-latest">
+                    Claude 3.5 Haiku (推荐 - 快速经济)
+                  </option>
+                  <option value="claude-sonnet-4-latest">
+                    Claude 4 Sonnet (更智能)
+                  </option>
+                </select>
+              </div>
+            </>
+          )}
 
           {/* Source Folder */}
           <div className="settings-section">

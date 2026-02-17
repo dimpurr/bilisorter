@@ -58,8 +58,15 @@ export interface LogEntry {
 }
 
 export interface Settings {
+  // AI Provider
+  provider: 'gemini' | 'claude';
+  // Gemini
+  geminiApiKey: string;
+  geminiModel: string;
+  // Claude
   apiKey: string;
   model: 'claude-3-5-haiku-latest' | 'claude-sonnet-4-latest';
+  // Source
   sourceFolderId: number | null;
 }
 

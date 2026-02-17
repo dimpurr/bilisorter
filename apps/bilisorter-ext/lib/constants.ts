@@ -4,6 +4,7 @@
 export const BILIBILI_API_BASE = 'https://api.bilibili.com';
 export const BILIBILI_WEB_BASE = 'https://www.bilibili.com';
 export const CLAUDE_API_BASE = 'https://api.anthropic.com';
+export const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com';
 
 // Storage Keys (mirrors types.ts)
 export const STORAGE_KEYS = {
@@ -24,6 +25,9 @@ export const STORAGE_KEYS = {
 
 // Default Settings
 export const DEFAULT_SETTINGS = {
+  provider: 'gemini' as const,
+  geminiApiKey: '',
+  geminiModel: 'gemini-3-flash-preview',
   apiKey: '',
   model: 'claude-3-5-haiku-latest' as const,
   sourceFolderId: null as number | null,
@@ -42,10 +46,15 @@ export const CLAUDE_API = {
   MESSAGES: '/v1/messages',
 } as const;
 
+// Gemini API Endpoints
+export const GEMINI_API = {
+  GENERATE_CONTENT: '/v1beta/models',
+} as const;
+
 // Source Video Pagination
 export const SOURCE = {
   PAGE_SIZE: 20, // B站 API page size
-  PAGES_PER_LOAD: 3, // 3 pages × 20 = 60 videos per load
+  PAGES_PER_LOAD: 2, // 2 pages × 20 = 40 videos per load
   PAGE_DELAY_MS: 500, // delay between page fetches
 } as const;
 
@@ -70,7 +79,7 @@ export const UI = {
 // AI Batch Constants
 export const AI_BATCH = {
   MIN_BATCH_SIZE: 5,
-  MAX_BATCH_SIZE: 10,
+  MAX_BATCH_SIZE: 20,
   INTER_BATCH_DELAY_MS: 1000, // increased from 300ms for reliability
   MAX_RETRIES: 2, // increased from 1
   RETRY_BACKOFF_MS: 2000, // backoff on retry

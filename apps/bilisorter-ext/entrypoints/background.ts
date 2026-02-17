@@ -8,11 +8,12 @@ import {
   moveVideo,
   RateLimitError,
 } from '../lib/bilibiliApi';
-import { generateSuggestions } from '../lib/claudeApi';
+import { generateSuggestions } from '../lib/aiApi';
 import type {
   AuthResponse,
   Folder,
   Video,
+  Suggestion,
   SourceMeta,
   FolderIndexCheckpoint,
   PortMessage,
@@ -471,9 +472,12 @@ export default defineBackground(() => {
       ]);
 
       const settings = stored[STORAGE_KEYS.SETTINGS];
-      if (!settings?.apiKey) {
-        suggestStatus = { inProgress: false, error: '未配置 API Key' };
-        safePostMessage(port, { type: 'ERROR', error: '请先在 ⚙️ 设置中配置 Claude API Key' });
+      const provider = settings?.provider || 'gemini';
+      const activeKey = provider === 'gemini' ? settings?.geminiApiKey : settings?.apiKey;
+      if (!activeKey) {
+        const providerName = provider === 'gemini' ? 'Gemini' : 'Claude';
+        suggestStatus = { inProgress: false, error: `未配置 ${providerName} API Key` };
+        safePostMessage(port, { type: 'ERROR', error: `请先在 ⚙️ 设置中配置 ${providerName} API Key` });
         return;
       }
 
@@ -495,8 +499,7 @@ export default defineBackground(() => {
         sourceVideos,
         folders,
         sourceFolderId,
-        settings.apiKey,
-        settings.model || 'claude-3-5-haiku-latest',
+        settings,
         (completed, total) => {
           suggestStatus.progress = `正在分析视频... ${completed}/${total}`;
           safePostMessage(port, {
