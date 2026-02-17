@@ -23,7 +23,7 @@ const VideoList: React.FC<VideoListProps> = ({
         <VideoCard
           key={video.bvid}
           video={video}
-          suggestions={suggestions[video.bvid]}
+          suggestions={suggestions[video.bvid] || []}
           onSuggestionClick={(suggestion) =>
             onSuggestionClick?.(video, suggestion)
           }

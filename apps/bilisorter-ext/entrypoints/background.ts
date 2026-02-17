@@ -5,7 +5,9 @@ import {
   fetchFolders,
   fetchFolderSample,
   fetchVideos,
+  moveVideo,
 } from '../lib/bilibiliApi';
+import { generateSuggestions } from '../lib/claudeApi';
 import type {
   AuthResponse,
   Folder,
@@ -31,6 +33,23 @@ export default defineBackground(() => {
       return true;
     }
 
+    if (message.type === 'GET_COOKIES') {
+      extractCookies().then(sendResponse).catch(() => sendResponse(null));
+      return true;
+    }
+
+    if (message.type === 'MOVE_VIDEO') {
+      const { srcFolderId, dstFolderId, resourceId, resourceType } = message;
+      extractCookies()
+        .then((cookies) => {
+          if (!cookies) throw new Error('未登录');
+          return moveVideo(srcFolderId, dstFolderId, resourceId, cookies);
+        })
+        .then(sendResponse)
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
+    }
+
     return false;
   });
 
@@ -42,6 +61,8 @@ export default defineBackground(() => {
     port.onMessage.addListener((message: PortMessage) => {
       if (message.type === 'INDEX') {
         handleIndex(port);
+      } else if (message.type === 'GET_SUGGESTIONS') {
+        handleGetSuggestions(port, message.videos, message.folders);
       }
     });
 
@@ -159,6 +180,63 @@ export default defineBackground(() => {
       console.log('[BiliSorter] Index operation complete');
     } catch (error) {
       console.error('[BiliSorter] Index operation failed:', error);
+      port.postMessage({
+        type: 'ERROR',
+        error: error instanceof Error ? error.message : '未知错误',
+      });
+    }
+  }
+
+  async function handleGetSuggestions(
+    port: chrome.runtime.Port,
+    videos: Video[],
+    folders: Folder[]
+  ): Promise<void> {
+    console.log('[BiliSorter] Starting suggestion generation');
+
+    try {
+      // Get settings
+      const result = await chrome.storage.local.get(STORAGE_KEYS.SETTINGS);
+      const settings = result[STORAGE_KEYS.SETTINGS];
+
+      if (!settings?.apiKey) {
+        port.postMessage({ type: 'ERROR', error: '未配置 API Key' });
+        return;
+      }
+
+      // Find source folder from videos
+      const sourceFolderId = folders[0]?.id;
+
+      // Generate suggestions
+      const suggestions = await generateSuggestions(
+        videos,
+        folders,
+        sourceFolderId,
+        settings.apiKey,
+        settings.model || 'claude-3-5-haiku-latest',
+        (completed, total) => {
+          port.postMessage({
+            type: 'SUGGESTION_PROGRESS',
+            completed,
+            total,
+          });
+        }
+      );
+
+      // Save to storage
+      await chrome.storage.local.set({
+        [STORAGE_KEYS.SUGGESTIONS]: suggestions,
+      });
+
+      // Complete
+      port.postMessage({
+        type: 'SUGGESTIONS_COMPLETE',
+        suggestions,
+      });
+
+      console.log('[BiliSorter] Suggestion generation complete');
+    } catch (error) {
+      console.error('[BiliSorter] Suggestion generation failed:', error);
       port.postMessage({
         type: 'ERROR',
         error: error instanceof Error ? error.message : '未知错误',

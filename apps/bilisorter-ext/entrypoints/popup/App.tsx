@@ -5,8 +5,10 @@ import StatusBar from './components/StatusBar';
 import EmptyState from './components/EmptyState';
 import SettingsPanel from './components/SettingsPanel';
 import VideoList from './components/VideoList';
-import type { Folder, Video, Settings, Suggestion, AuthResponse, PortMessage } from '../../lib/types';
-import { STORAGE_KEYS, DEFAULT_SETTINGS } from '../../lib/constants';
+import ToastStack, { type Toast } from './components/ToastStack';
+import OperationLogModal from './components/OperationLogModal';
+import type { Folder, Video, Settings, Suggestion, AuthResponse, PortMessage, LogEntry } from '../../lib/types';
+import { STORAGE_KEYS, DEFAULT_SETTINGS, UI } from '../../lib/constants';
 import './App.css';
 
 type EmptyStateType =
@@ -37,6 +39,28 @@ const App: React.FC = () => {
   const [isIndexing, setIsIndexing] = useState(false);
   const [isGeneratingSuggestions, setIsGeneratingSuggestions] = useState(false);
   const [progressText, setProgressText] = useState<string | undefined>(undefined);
+
+  // Toast state for 5s undo
+  const [toasts, setToasts] = useState<Toast[]>([]);
+
+  // Operation log modal
+  const [isLogModalOpen, setIsLogModalOpen] = useState(false);
+  const [operationLog, setOperationLog] = useState<LogEntry[]>([]);
+
+  // Load operation log on mount
+  useEffect(() => {
+    const loadLog = async () => {
+      try {
+        const result = await chrome.storage.local.get(STORAGE_KEYS.OPERATION_LOG);
+        if (result[STORAGE_KEYS.OPERATION_LOG]) {
+          setOperationLog(result[STORAGE_KEYS.OPERATION_LOG]);
+        }
+      } catch (error) {
+        console.error('[App] Error loading operation log:', error);
+      }
+    };
+    loadLog();
+  }, []);
 
   // Load cached data and settings on mount
   useEffect(() => {
@@ -155,20 +179,156 @@ const App: React.FC = () => {
 
   // Suggest handler
   const handleSuggest = useCallback(() => {
-    // Will be implemented in Step 6
-    console.log('[App] Suggest requested');
-  }, []);
+    setIsGeneratingSuggestions(true);
+    setProgressText('正在准备AI分析...');
+
+    const port = chrome.runtime.connect({ name: 'bilisorter-suggestions' });
+
+    port.onMessage.addListener((message: PortMessage) => {
+      switch (message.type) {
+        case 'SUGGESTION_PROGRESS':
+          setProgressText(`正在分析视频... ${message.completed}/${message.total}`);
+          break;
+
+        case 'SUGGESTIONS_COMPLETE':
+          setSuggestions(message.suggestions);
+          setIsGeneratingSuggestions(false);
+          setProgressText(undefined);
+          // Save to storage
+          chrome.storage.local.set({ [STORAGE_KEYS.SUGGESTIONS]: message.suggestions });
+          port.disconnect();
+          break;
+
+        case 'ERROR':
+          console.error('[App] Suggestion error:', message.error);
+          setIsGeneratingSuggestions(false);
+          setProgressText(undefined);
+          port.disconnect();
+          break;
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      if (isGeneratingSuggestions) {
+        setIsGeneratingSuggestions(false);
+        setProgressText(undefined);
+      }
+    });
+
+    // Send GET_SUGGESTIONS message with videos and folders
+    port.postMessage({
+      type: 'GET_SUGGESTIONS',
+      videos,
+      folders,
+    });
+  }, [videos, folders, isGeneratingSuggestions]);
+
+  // Move handler with 5s undo
+  const handleMoveVideo = useCallback(async (video: Video, suggestion: Suggestion) => {
+    const toastId = `${video.bvid}-${Date.now()}`;
+    const folderName = folders.find(f => f.id === suggestion.folderId)?.name || suggestion.folderName;
+
+    // Optimistically remove video from list
+    setVideos(prev => prev.filter(v => v.bvid !== video.bvid));
+
+    // Create toast
+    const newToast: Toast = {
+      id: toastId,
+      videoTitle: video.title,
+      folderName: folderName,
+      timeLeft: UI.UNDO_TIMEOUT_MS,
+      totalTime: UI.UNDO_TIMEOUT_MS,
+      onUndo: () => {
+        // Re-insert video at original position
+        setVideos(prev => {
+          const index = prev.findIndex(v => v.bvid === video.bvid);
+          if (index === -1) {
+            return [...prev, video];
+          }
+          return prev;
+        });
+        setToasts(prev => prev.filter(t => t.id !== toastId));
+      },
+      onComplete: async () => {
+        // Perform actual move via background
+        try {
+          const cookies = await chrome.runtime.sendMessage({ type: 'GET_COOKIES' });
+          if (!cookies) return;
+
+          await chrome.runtime.sendMessage({
+            type: 'MOVE_VIDEO',
+            srcFolderId: sourceFolderId,
+            dstFolderId: suggestion.folderId,
+            resourceId: video.bvid.replace('BV', ''),
+            resourceType: 2
+          });
+
+          // Add to operation log
+          const logEntry: LogEntry = {
+            timestamp: new Date().toISOString(),
+            videoTitle: video.title,
+            bvid: video.bvid,
+            fromFolderName: folders.find(f => f.id === sourceFolderId)?.name || '未知',
+            toFolderName: folderName
+          };
+
+          const updatedLog = [logEntry, ...operationLog].slice(0, 1000); // Keep last 1000
+          setOperationLog(updatedLog);
+          await chrome.storage.local.set({ [STORAGE_KEYS.OPERATION_LOG]: updatedLog });
+
+          // Remove from suggestions
+          setSuggestions(prev => {
+            const newSuggestions = { ...prev };
+            delete newSuggestions[video.bvid];
+            return newSuggestions;
+          });
+
+          // Save updated videos and suggestions
+          await chrome.storage.local.set({
+            [STORAGE_KEYS.VIDEOS]: videos.filter(v => v.bvid !== video.bvid),
+            [STORAGE_KEYS.SUGGESTIONS]: suggestions
+          });
+        } catch (error) {
+          console.error('[App] Move failed:', error);
+          // Re-insert video on error
+          setVideos(prev => [...prev, video]);
+        }
+        setToasts(prev => prev.filter(t => t.id !== toastId));
+      }
+    };
+
+    setToasts(prev => [...prev, newToast]);
+  }, [videos, folders, sourceFolderId, suggestions, operationLog]);
 
   // Export handler
   const handleExport = useCallback(() => {
-    // Will be implemented in Step 9
-    console.log('[App] Export requested');
-  }, []);
+    const exportData = {
+      exportDate: new Date().toISOString(),
+      sourceFolderId,
+      sourceFolderName: folders.find(f => f.id === sourceFolderId)?.name || '未知',
+      videos: videos.map(v => ({
+        title: v.title,
+        bvid: v.bvid,
+        cover: v.cover,
+        upper: v.upper,
+        tags: v.tags,
+        fav_time: v.fav_time,
+        suggestions: suggestions[v.bvid] || []
+      }))
+    };
+
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `bilisorter-export-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [videos, folders, sourceFolderId, suggestions]);
 
   // Log handler
   const handleLog = useCallback(() => {
-    // Will be implemented in Step 9
-    console.log('[App] Log requested');
+    setIsLogModalOpen(true);
   }, []);
 
   // Source folder change handler
@@ -241,7 +401,10 @@ const App: React.FC = () => {
       </div>
 
       <div className="toast-area">
-        {/* Toasts will be implemented in Step 8 */}
+        <ToastStack
+          toasts={toasts}
+          onRemove={(id) => setToasts(prev => prev.filter(t => t.id !== id))}
+        />
       </div>
 
       {isSettingsOpen && (
@@ -251,6 +414,14 @@ const App: React.FC = () => {
           folders={folders}
           onSettingsChange={handleSettingsChange}
           onClose={() => setIsSettingsOpen(false)}
+        />
+      )}
+
+      {isLogModalOpen && (
+        <OperationLogModal
+          isOpen={isLogModalOpen}
+          log={operationLog}
+          onClose={() => setIsLogModalOpen(false)}
         />
       )}
     </div>
