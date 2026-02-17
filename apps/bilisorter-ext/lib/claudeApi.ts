@@ -223,6 +223,7 @@ async function callClaudeAPI(
       'Content-Type': 'application/json',
       'X-API-Key': apiKey,
       'Anthropic-Version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
     },
     body: JSON.stringify(request),
   });
