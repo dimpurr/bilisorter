@@ -103,7 +103,8 @@ export type OneShotMessage =
   | { type: 'FORCE_REINDEX' }
   | { type: 'MOVE_VIDEO'; srcFolderId: number; dstFolderId: number; resourceId: string; resourceType: number }
   | { type: 'SORT_FOLDERS'; folderIds: number[] }
-  | { type: 'RENAME_FOLDER'; folderId: number; title: string };
+  | { type: 'RENAME_FOLDER'; folderId: number; title: string }
+  | { type: 'FETCH_FOLDERS_FRESH' };
 
 // Operation status response (for GET_INDEX_STATUS / GET_SUGGEST_STATUS)
 export interface OperationStatus {

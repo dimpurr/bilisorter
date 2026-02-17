@@ -171,6 +171,29 @@ export default defineBackground(() => {
       return true;
     }
 
+    if (message.type === 'FETCH_FOLDERS_FRESH') {
+      (async () => {
+        try {
+          const cookies = await extractCookies();
+          if (!cookies) { sendResponse({ success: false, error: '未登录' }); return; }
+          const authResult = await checkAuth(cookies);
+          if (!authResult.loggedIn || !authResult.uid) { sendResponse({ success: false, error: '登录已过期' }); return; }
+          const freshFolders = await fetchFolders(authResult.uid, cookies);
+          // Merge with cached sampleTitles so AI context is preserved
+          const stored = await chrome.storage.local.get(STORAGE_KEYS.FOLDER_SAMPLES);
+          const cachedSamples: Record<string, string[]> = stored[STORAGE_KEYS.FOLDER_SAMPLES] || {};
+          for (const folder of freshFolders) {
+            const cached = cachedSamples[String(folder.id)];
+            if (cached) folder.sampleTitles = cached;
+          }
+          sendResponse({ success: true, folders: freshFolders });
+        } catch (error) {
+          sendResponse({ success: false, error: error instanceof Error ? error.message : '未知错误' });
+        }
+      })();
+      return true;
+    }
+
     return false;
   });
 

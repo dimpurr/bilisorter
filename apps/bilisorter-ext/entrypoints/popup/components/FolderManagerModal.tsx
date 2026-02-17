@@ -156,16 +156,40 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
   onClose,
 }) => {
   const [localFolders, setLocalFolders] = useState<Folder[]>(folders);
+  const [isLoading, setIsLoading] = useState(false);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editValue, setEditValue] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  // Sync with parent folders when they change
+  // Fetch fresh folder list from B站 API on open
   useEffect(() => {
-    setLocalFolders(folders);
-  }, [folders]);
+    if (!isOpen) return;
+    let cancelled = false;
+    setIsLoading(true);
+    setStatusMessage('正在加载最新收藏夹...');
+
+    chrome.runtime.sendMessage({ type: 'FETCH_FOLDERS_FRESH' }).then((response) => {
+      if (cancelled) return;
+      if (response?.success && response.folders) {
+        setLocalFolders(response.folders);
+        setStatusMessage(null);
+      } else {
+        // Fallback to cached folders
+        setLocalFolders(folders);
+        setStatusMessage('⚠️ 加载失败，使用缓存数据');
+      }
+      setIsLoading(false);
+    }).catch(() => {
+      if (cancelled) return;
+      setLocalFolders(folders);
+      setStatusMessage('⚠️ 加载失败，使用缓存数据');
+      setIsLoading(false);
+    });
+
+    return () => { cancelled = true; };
+  }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clear status after 2s
   useEffect(() => {
@@ -289,7 +313,11 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
         </div>
 
         <div className="modal-body folder-manager-body">
-          {localFolders.length === 0 ? (
+          {isLoading ? (
+            <div className="empty-log">
+              <p>⏳ 正在加载收藏夹列表...</p>
+            </div>
+          ) : localFolders.length === 0 ? (
             <div className="empty-log">
               <p>没有收藏夹，请先索引</p>
             </div>
