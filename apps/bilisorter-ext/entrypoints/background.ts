@@ -98,6 +98,15 @@ export default defineBackground(() => {
   // ─── One-shot message handlers ───
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Open side panel (must be triggered from background for security)
+    if (message.type === 'OPEN_SIDEPANEL') {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0]?.id) {
+          (chrome.sidePanel as any).open({ tabId: tabs[0].id });
+        }
+      });
+      return false;
+    }
     if (message.type === 'CHECK_AUTH') {
       handleCheckAuth().then(sendResponse).catch((error) => {
         console.error('[BiliSorter] CHECK_AUTH error:', error);

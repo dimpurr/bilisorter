@@ -15,11 +15,28 @@ const Header: React.FC<HeaderProps> = ({
   onFolderManager,
   hasSettingsDot = false,
 }) => {
+  const isSidepanel = document.body.classList.contains('sidepanel');
+
+  const handleOpenSidepanel = () => {
+    // Open side panel from popup, then close popup
+    chrome.runtime.sendMessage({ type: 'OPEN_SIDEPANEL' });
+    window.close();
+  };
+
   return (
     <div className="header">
       <div className="header-row">
         <div className="header-title">BiliSorter</div>
         <div className="header-actions">
+          {!isSidepanel && (
+            <button
+              className="icon-btn"
+              onClick={handleOpenSidepanel}
+              title="在侧栏打开"
+            >
+              📌
+            </button>
+          )}
           <button
             className="icon-btn"
             onClick={onFolderManager}

@@ -5,8 +5,11 @@ export default defineConfig({
     name: 'BiliSorter - AI收藏夹整理',
     description: '使用AI智能整理Bilibili收藏夹，一键分类、批量移动',
     version: '0.1.0',
-    permissions: ['cookies', 'storage', 'declarativeNetRequest'],
+    permissions: ['cookies', 'storage', 'declarativeNetRequest', 'sidePanel'],
     host_permissions: ['*://*.bilibili.com/*', 'https://api.bilibili.com/*', 'https://api.anthropic.com/*', 'https://generativelanguage.googleapis.com/*'],
+    side_panel: {
+      default_path: 'sidepanel.html',
+    },
     icons: {
       '16': 'icon/16.png',
       '32': 'icon/32.png',

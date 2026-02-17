@@ -16,6 +16,21 @@ body {
   overflow: hidden;
 }
 
+/* Side panel mode: use full viewport */
+body.sidepanel {
+  width: 100%;
+  min-width: 360px;
+  max-height: none;
+  height: 100vh;
+  overflow: auto;
+}
+
+body.sidepanel #root,
+body.sidepanel .app {
+  max-height: none;
+  height: 100%;
+}
+
 #root {
   height: 100%;
   display: flex;
@@ -550,7 +565,7 @@ body {
   border-radius: 12px;
   width: 100%;
   max-width: 480px;
-  max-height: 80vh;
+  max-height: 95vh;
   display: flex;
   flex-direction: column;
   animation: modalIn 0.2s ease;
