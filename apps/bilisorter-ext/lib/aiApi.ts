@@ -1,6 +1,6 @@
 // BiliSorter - Unified AI API (Claude + Gemini, parallel batches)
 
-import type { Video, Folder, Suggestion, Settings } from './types';
+import type { Video, Folder, Suggestion, Settings, ChatMessage } from './types';
 import { CLAUDE_API_BASE, CLAUDE_API, GEMINI_API_BASE, GEMINI_API, AI_BATCH } from './constants';
 
 // ─── Shared Types ───
@@ -348,6 +348,121 @@ async function callGeminiAPI(
       maxOutputTokens: 8192,
       temperature: 0.2,
       responseMimeType: 'application/json',
+    },
+  };
+
+  const url = `${GEMINI_API_BASE}${GEMINI_API.GENERATE_CONTENT}/${model}:generateContent`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': apiKey,
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    const errMsg = (errorData as any)?.error?.message || response.statusText;
+    throw new Error(`Gemini API error: ${response.status} - ${errMsg}`);
+  }
+
+  const data: GeminiResponse = await response.json();
+
+  if (!data.candidates || data.candidates.length === 0) {
+    throw new Error('Gemini returned no candidates');
+  }
+
+  return data.candidates[0].content.parts.map((p) => p.text).join('') || '';
+}
+
+// ─── Chat with AI (Multi-turn, direct from popup/sidepanel) ───
+
+/**
+ * Send a multi-turn chat conversation to the configured AI provider.
+ * Called directly from the UI — no background worker needed.
+ */
+export async function chatWithAI(
+  messages: ChatMessage[],
+  systemPrompt: string,
+  settings: Settings
+): Promise<string> {
+  const provider = settings.provider || 'gemini';
+  const apiKey = provider === 'gemini' ? settings.geminiApiKey : settings.apiKey;
+  const model = provider === 'gemini'
+    ? (settings.geminiModel || 'gemini-3-flash-preview')
+    : (settings.model || 'claude-3-5-haiku-latest');
+
+  if (!apiKey) {
+    throw new Error(
+      provider === 'gemini'
+        ? '请先在设置中配置 Gemini API Key'
+        : '请先在设置中配置 Claude API Key'
+    );
+  }
+
+  if (provider === 'claude') {
+    return chatWithClaude(messages, systemPrompt, apiKey, model);
+  } else {
+    return chatWithGemini(messages, systemPrompt, apiKey, model);
+  }
+}
+
+async function chatWithClaude(
+  messages: ChatMessage[],
+  systemPrompt: string,
+  apiKey: string,
+  model: string
+): Promise<string> {
+  const request: ClaudeRequest = {
+    model,
+    max_tokens: 4096,
+    messages: messages.map(m => ({ role: m.role, content: m.content })),
+    system: systemPrompt,
+  };
+
+  const response = await fetch(`${CLAUDE_API_BASE}${CLAUDE_API.MESSAGES}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-Key': apiKey,
+      'Anthropic-Version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      `Claude API error: ${response.status} - ${(errorData as any).error?.message || response.statusText}`
+    );
+  }
+
+  const data: ClaudeResponse = await response.json();
+  return data.content[0]?.text || '';
+}
+
+async function chatWithGemini(
+  messages: ChatMessage[],
+  systemPrompt: string,
+  apiKey: string,
+  model: string
+): Promise<string> {
+  const contents = messages.map(m => ({
+    role: m.role === 'assistant' ? 'model' as const : 'user' as const,
+    parts: [{ text: m.content }],
+  }));
+
+  const request: GeminiRequest = {
+    contents,
+    systemInstruction: {
+      parts: [{ text: systemPrompt }],
+    },
+    generationConfig: {
+      maxOutputTokens: 8192,
+      temperature: 0.7,
     },
   };
 

@@ -16,6 +16,7 @@ export const STORAGE_KEYS = {
   SUGGESTIONS: 'bilisorter_suggestions',
   // Global
   OPERATION_LOG: 'bilisorter_operation_log',
+  CHAT_HISTORY: 'bilisorter_chat_history',
 } as const;
 
 // ─── Core Data Types ───
@@ -55,6 +56,12 @@ export interface LogEntry {
   bvid: string;
   fromFolderName: string;
   toFolderName: string;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: number;
 }
 
 export interface Settings {

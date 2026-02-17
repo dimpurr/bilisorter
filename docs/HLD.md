@@ -9,9 +9,9 @@
 | Version | Summary |
 |---------|---------|
 | **v0.1** | Initial MVP: single monolithic INDEX operation coupling folder sampling and full video fetch |
-| **v0.2** (current) | Three-pool architecture: separated folder indexing, paginated source video queue (60/page), incremental AI suggestions. Fixed Claude pipeline (1s batch delay, error reporting, incremental mode). New two-zone layout. |
-| **v1** (planned) | Multi-provider AI (Deepseek, OpenAI, Ollama), batch apply all, create folder from popup, duplicate detection |
-| **Future** | Side Panel UI, content script integration, smart folder suggestions, cross-folder analytics |
+| **v0.2** (current) | Three-pool architecture: separated folder indexing, paginated source video queue (60/page), incremental AI suggestions. Fixed Claude pipeline (1s batch delay, error reporting, incremental mode). New two-zone layout. Multi-provider (Claude + Gemini). Folder manager (drag-sort, inline rename, sort buttons). Side Panel UI. AI Advisor Chat. declarativeNetRequest for header rewriting. |
+| **v1** (planned) | Batch apply all, create folder from popup, duplicate detection |
+| **Future** | Streaming AI chat, execute-from-chat, AI tool-use, content script integration |
 
 ---
 
@@ -22,16 +22,18 @@
 │  Chrome Extension (Manifest V3, WXT)       │
 │                                            │
 │  ┌──────────────┐  ┌────────────────────┐  │
-│  │ Background   │  │ Popup (React)      │  │
-│  │ Service      │  │                    │  │
-│  │ Worker       │  │ • Source selector  │  │
-│  │              │  │ • Video list       │  │
-│  │ • Cookie     │  │ • AI badges       │  │
-│  │   extraction │  │ • Undo toast      │  │
-│  │ • B站 API    │  │ • Settings        │  │
-│  │   calls      │  │ • Log viewer      │  │
-│  │ • Claude API │  │ • JSON export     │  │
-│  │   calls      │  │                    │  │
+│  │ Background   │  │ Popup / SidePanel  │  │
+│  │ Service      │  │ (React, shared)    │  │
+│  │ Worker       │  │                    │  │
+│  │              │  │ • Source selector  │  │
+│  │ • Cookie     │  │ • Video list       │  │
+│  │   extraction │  │ • AI badges       │  │
+│  │ • B站 API    │  │ • Undo toast      │  │
+│  │   calls      │  │ • Settings        │  │
+│  │ • Header     │  │ • Log viewer      │  │
+│  │   rewriting  │  │ • Folder manager  │  │
+│  │              │  │ • AI Chat advisor │  │
+│  │              │  │ • JSON export     │  │
 │  └──────┬───────┘  └────────┬───────────┘  │
 │         │     sendMessage / Port             │
 │         └──────────────┬───────────────────┘
@@ -41,6 +43,7 @@
 │  │ • Pool 1: Folder index + samples       ││
 │  │ • Pool 2: Source video queue (60/page) ││
 │  │ • Pool 3: AI suggestions cache         ││
+│  │ • Chat history (persistent)            ││
 │  │ • Operation log (permanent)            ││
 │  │ • Settings (API key, model, source)    ││
 │  └────────────────────────────────────────┘│
@@ -61,7 +64,7 @@
 | UI | React 18 + vanilla CSS |
 | State | React useState (no state library) |
 | Persistence | chrome.storage.local |
-| AI | Claude API (Haiku default, Sonnet optional) |
+| AI | Claude API (Haiku default, Sonnet optional) + Gemini API (Flash default) |
 | Build | Vite (via WXT) |
 | Language | TypeScript |
 
@@ -106,14 +109,16 @@ B站 does not offer a public OAuth flow. Authentication relies on the user's exi
 | Permission | Why |
 |------------|-----|
 | `cookies` | Read SESSDATA, bili_jct, DedeUserID |
-| `storage` | Persist cache, settings, operation log |
+| `storage` | Persist cache, settings, operation log, chat history |
+| `declarativeNetRequest` | Rewrite Origin/Referer headers for B站 API calls |
+| `sidePanel` | Side Panel UI (Chrome 114+) |
 
 | Host Permission | Why |
 |-----------------|-----|
 | `*://*.bilibili.com/*` | Cookie access scope |
 | `https://api.bilibili.com/*` | API fetch from background SW |
 
-No `sidePanel`, `activeTab`, `scripting`, or `webNavigation` needed.
+No `activeTab`, `scripting`, or `webNavigation` needed.
 
 **Note on Claude API**: Calls to `api.anthropic.com` do NOT require `host_permissions`. Background service worker `fetch()` bypasses CORS, so no additional permissions are needed for the LLM API.
 
@@ -415,6 +420,7 @@ All data stored in `chrome.storage.local` under namespaced keys. **Three indepen
 | `bilisorter_source_meta` | 2 | `SourceMeta` | Session-cached | Source pagination state: {folderId, total, nextPage, hasMore, lastFetchTime} |
 | `bilisorter_suggestions` | 3 | `{[bvid]: Suggestion[]}` | Cached, cleared on source refresh | AI suggestions keyed by video bvid |
 | `bilisorter_operation_log` | — | `LogEntry[]` | Permanent, append-only | Move operation history |
+| `bilisorter_chat_history` | — | `ChatMessage[]` | Permanent, manual clear | AI advisor chat history |
 
 No IndexedDB. `chrome.storage.local` is sufficient for the data volumes involved (~200KB for 60 videos with suggestions).
 
@@ -485,13 +491,80 @@ No IndexedDB. `chrome.storage.local` is sufficient for the data volumes involved
 
 ---
 
+## AI Advisor Chat (💬)
+
+An in-app multi-turn chat interface where the user can converse with AI about their collection structure and get actionable organization advice.
+
+### Architecture: Direct API (Plan B)
+
+Chat calls the AI provider directly from the popup/sidepanel component — no background worker involved. This means the chat works even if the background service worker is inactive. Uses the same provider/key/model configured in Settings.
+
+- **Claude**: Direct fetch with `anthropic-dangerous-direct-browser-access` header (same as existing classification)
+- **Gemini**: Direct fetch with `x-goog-api-key` (same pattern)
+
+### Context (System Prompt)
+
+Built fresh on each API call from current folder data (Pool 1):
+- Full folder list with: name, ID, media_count, position order, sample titles
+- Aggregate stats: total folders, total videos, avg/min/max folder size
+- System role: "Bilibili 收藏夹顾问" — advises on merge, split, rename, reorder
+- No token cap — modern context windows (200K+) easily accommodate all folder data
+
+### Chat Persistence
+
+Chat history is stored in `chrome.storage.local` (`bilisorter_chat_history`) as a `ChatMessage[]` array. Persists across popup opens/closes, across browser restarts. Only cleared when user clicks the 🗑 clear button in the chat header.
+
+### UI Layout
+
+```
+┌─────── Chat Modal ────────┐
+│ 💬 收藏夹顾问    [🗑][✕]   │  ← Header + clear + close
+│───────────────────────────│
+│  🤖 收藏夹 AI 顾问         │  ← Welcome (empty state)
+│  我可以分析你的55个收藏夹   │
+│                           │
+│  [📊 调整建议] [❤️ 偏好]   │  ← Quick action grid
+│  [🔀 合并建议] [📐 命名]   │     (shown only when no msgs)
+│───────────────────────────│
+│  输入你的问题...      [▶]  │  ← Input bar
+└───────────────────────────┘
+```
+
+After conversation starts:
+```
+┌─────── Chat Modal ────────┐
+│ 💬 收藏夹顾问    [🗑][✕]   │
+│───────────────────────────│
+│          分析我的收藏偏好   │  ← User bubble (right, blue)
+│                           │
+│ 根据你的收藏夹结构分析...   │  ← Assistant bubble (left, gray)
+│ 1. 你主要关注...           │
+│ 2. 建议合并...             │
+│                           │
+│ ●●● (thinking...)         │  ← Typing indicator
+│───────────────────────────│
+│  输入你的问题...      [▶]  │
+└───────────────────────────┘
+```
+
+### Quick Action Presets
+
+| Button | Prompt |
+|--------|--------|
+| 📊 收藏夹调整建议 | 分析收藏夹结构，指出过大/过小/重叠，给出具体调整方案 |
+| ❤️ 分析收藏偏好 | 根据名称和样本分析内容兴趣偏好和收藏习惯 |
+| 🔀 合并建议 | 找出高度相似的收藏夹，给出具体合并方案和新名称 |
+| 📐 命名优化 | 审视所有命名，建议更清晰一致的命名方案 |
+
+Quick actions only shown when chat is empty. After sending, they disappear and normal chat continues.
+
+### Multi-turn Conversation
+
+Full message history sent with each API call. System prompt (with folder context) rebuilt fresh each call to reflect any folder changes made between messages. No streaming in v0 — response appears when complete, typing indicator shown during wait.
+
+---
+
 ## v1 Changes (planned)
-
-### Multi-provider AI
-
-Add provider selection in settings: Claude (default), Deepseek, OpenAI-compatible, Ollama (local).
-
-Each provider uses the same prompt template, different API endpoint/format. Abstracted behind a `callLLM(prompt, model): Promise<SuggestionResult>` interface in `llmService.ts`.
 
 ### Batch Apply
 
@@ -509,11 +582,15 @@ After indexing, scan all folders for videos that appear in multiple folders. Dis
 
 ## Future Ideas (no commitments)
 
-- **Side Panel migration**: If popup proves too cramped, move main UI to Side Panel (Chrome 114+). WXT supports this with minimal manifest changes.
-- **Content Script augmentation**: Inject subtle indicators on B站's own favorites page (e.g., small icon showing "BiliSorter has suggestions for this video").
-- **Smart folder creation**: When AI finds no matching folder for a cluster of videos, suggest creating a new folder with a name.
-- **Cross-folder analytics**: "You have 3 folders about tech topics — consider merging?"
-- **Raindrop.io bridge**: Export B站 favorites as bookmarks importable to Raindrop.io (closes the loop with RainSorter).
+- **Streaming AI chat**: Replace request-response chat with streaming responses (SSE/ReadableStream) for real-time feel
+- **Execute suggestion from chat**: AI proposes rename/merge → one-click apply buttons rendered inline in chat
+- **Tool-use / function-calling**: AI can directly call rename/merge/sort APIs via tool use protocol
+- **Multi-provider expansion**: Deepseek, OpenAI-compatible, Ollama (local) providers
+- **Content Script augmentation**: Inject subtle indicators on B站's own favorites page
+- **Smart folder creation**: When AI finds no matching folder for a cluster of videos, suggest creating a new folder
+- **Cross-folder analytics**: Deep statistical analysis of collection patterns over time
+- **Raindrop.io bridge**: Export B站 favorites as bookmarks importable to Raindrop.io
+- **Chat context summarization**: Auto-summarize long chat history for very long conversations
 
 ---
 

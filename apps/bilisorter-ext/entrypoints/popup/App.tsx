@@ -6,6 +6,7 @@ import VideoList from './components/VideoList';
 import ToastStack, { type Toast } from './components/ToastStack';
 import OperationLogModal from './components/OperationLogModal';
 import FolderManagerModal from './components/FolderManagerModal';
+import ChatModal from './components/ChatModal';
 import type { Folder, Video, SourceMeta, FolderIndexCheckpoint, Settings, Suggestion, AuthResponse, PortMessage, LogEntry } from '../../lib/types';
 import { STORAGE_KEYS, DEFAULT_SETTINGS, UI } from '../../lib/constants';
 import './App.css';
@@ -54,6 +55,9 @@ const App: React.FC = () => {
 
   // Folder manager modal
   const [isFolderManagerOpen, setIsFolderManagerOpen] = useState(false);
+
+  // Chat modal
+  const [isChatOpen, setIsChatOpen] = useState(false);
 
   // Folder index section collapsed state
   const [isFolderSectionCollapsed, setIsFolderSectionCollapsed] = useState(false);
@@ -593,6 +597,7 @@ const App: React.FC = () => {
           onSettingsToggle={() => setIsSettingsOpen(!isSettingsOpen)}
           onLogToggle={() => setIsLogModalOpen(true)}
           onFolderManager={() => setIsFolderManagerOpen(true)}
+          onChatOpen={() => setIsChatOpen(true)}
           hasSettingsDot={!settings.apiKey && !settings.geminiApiKey && auth?.loggedIn}
         />
       </div>
@@ -813,6 +818,15 @@ const App: React.FC = () => {
           onFoldersReorder={handleFoldersReorder}
           onFolderRename={handleFolderRename}
           onClose={() => setIsFolderManagerOpen(false)}
+        />
+      )}
+
+      {isChatOpen && (
+        <ChatModal
+          isOpen={isChatOpen}
+          folders={folders}
+          settings={settings}
+          onClose={() => setIsChatOpen(false)}
         />
       )}
     </div>

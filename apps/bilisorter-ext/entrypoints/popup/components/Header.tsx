@@ -5,6 +5,7 @@ interface HeaderProps {
   onSettingsToggle: () => void;
   onLogToggle: () => void;
   onFolderManager: () => void;
+  onChatOpen: () => void;
   hasSettingsDot?: boolean;
 }
 
@@ -13,6 +14,7 @@ const Header: React.FC<HeaderProps> = ({
   onSettingsToggle,
   onLogToggle,
   onFolderManager,
+  onChatOpen,
   hasSettingsDot = false,
 }) => {
   const isSidepanel = document.body.classList.contains('sidepanel');
@@ -37,6 +39,13 @@ const Header: React.FC<HeaderProps> = ({
               📌
             </button>
           )}
+          <button
+            className="icon-btn"
+            onClick={onChatOpen}
+            title="收藏夹 AI 顾问"
+          >
+            💬
+          </button>
           <button
             className="icon-btn"
             onClick={onFolderManager}

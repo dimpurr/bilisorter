@@ -21,6 +21,7 @@ export const STORAGE_KEYS = {
   SUGGESTIONS: 'bilisorter_suggestions',
   // Global
   OPERATION_LOG: 'bilisorter_operation_log',
+  CHAT_HISTORY: 'bilisorter_chat_history',
 } as const;
 
 // Default Settings
