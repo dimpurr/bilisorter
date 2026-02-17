@@ -171,7 +171,6 @@ export async function fetchFolders(
       id: folder.id,
       name: folder.title,
       media_count: folder.media_count,
-      attr: folder.attr ?? 0,
       sampleTitles: [],
     }));
   } catch (error) {

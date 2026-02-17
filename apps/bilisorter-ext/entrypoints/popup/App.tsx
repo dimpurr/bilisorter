@@ -483,8 +483,8 @@ const App: React.FC = () => {
 
   const handleFoldersReorder = useCallback(async (newFolders: Folder[]) => {
     setFolders(newFolders);
-    // Exclude default folder (attr !== 0) from sort API — it's always pinned first
-    const folderIds = newFolders.filter(f => f.attr === 0).map(f => f.id);
+    // Skip default folder (always first) — B站 API doesn't allow sorting it
+    const folderIds = newFolders.slice(1).map(f => f.id);
     try {
       const response = await chrome.runtime.sendMessage({
         type: 'SORT_FOLDERS',

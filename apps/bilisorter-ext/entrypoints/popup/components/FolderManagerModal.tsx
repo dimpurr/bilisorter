@@ -163,10 +163,6 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
-  // Ensure folders have attr field (safe default for old cached data)
-  const safeFolders = (list: Folder[]) =>
-    list.map((f, i) => ({ ...f, attr: f.attr ?? (i === 0 ? 1 : 0) }));
-
   // Fetch fresh folder list from B站 API on open
   useEffect(() => {
     if (!isOpen) return;
@@ -177,17 +173,17 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
     chrome.runtime.sendMessage({ type: 'FETCH_FOLDERS_FRESH' }).then((response) => {
       if (cancelled) return;
       if (response?.success && response.folders) {
-        setLocalFolders(safeFolders(response.folders));
+        setLocalFolders(response.folders);
         setStatusMessage(null);
       } else {
         // Fallback to cached folders
-        setLocalFolders(safeFolders(folders));
+        setLocalFolders(folders);
         setStatusMessage('⚠️ 加载失败，使用缓存数据');
       }
       setIsLoading(false);
     }).catch(() => {
       if (cancelled) return;
-      setLocalFolders(safeFolders(folders));
+      setLocalFolders(folders);
       setStatusMessage('⚠️ 加载失败，使用缓存数据');
       setIsLoading(false);
     });
@@ -214,9 +210,9 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
     })
   );
 
-  // Separate default folder (pinned) from sortable folders
-  const defaultFolder = localFolders.find((f) => f.attr !== 0) ?? null;
-  const sortableFolders = localFolders.filter((f) => f.attr === 0);
+  // Default folder is always the first one (B站 API invariant)
+  const defaultFolder = localFolders.length > 0 ? localFolders[0] : null;
+  const sortableFolders = localFolders.slice(1);
 
   const activeFolder = activeId
     ? sortableFolders.find((f) => f.id === activeId)
@@ -261,7 +257,7 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
 
   const handleEditStart = useCallback((folderId: number) => {
     const folder = localFolders.find((f) => f.id === folderId);
-    if (!folder || folder.attr !== 0) return; // Cannot rename default folder
+    if (!folder || folder.id === localFolders[0]?.id) return; // Cannot rename default folder
     setEditingId(folderId);
     setEditValue(folder.name);
   }, [localFolders]);
