@@ -39,6 +39,8 @@ export const BILI_API = {
   FOLDER_LIST: '/x/v3/fav/folder/created/list-all',
   VIDEO_LIST: '/x/v3/fav/resource/list',
   MOVE: '/x/v3/fav/resource/move',
+  FOLDER_SORT: '/x/v3/fav/folder/sort',
+  FOLDER_EDIT: '/x/v3/fav/folder/edit',
 } as const;
 
 // Claude API Endpoints

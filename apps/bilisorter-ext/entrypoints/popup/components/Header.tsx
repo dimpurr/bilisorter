@@ -4,6 +4,7 @@ interface HeaderProps {
   username?: string;
   onSettingsToggle: () => void;
   onLogToggle: () => void;
+  onFolderManager: () => void;
   hasSettingsDot?: boolean;
 }
 
@@ -11,6 +12,7 @@ const Header: React.FC<HeaderProps> = ({
   username,
   onSettingsToggle,
   onLogToggle,
+  onFolderManager,
   hasSettingsDot = false,
 }) => {
   return (
@@ -18,6 +20,13 @@ const Header: React.FC<HeaderProps> = ({
       <div className="header-row">
         <div className="header-title">BiliSorter</div>
         <div className="header-actions">
+          <button
+            className="icon-btn"
+            onClick={onFolderManager}
+            title="收藏夹管理"
+          >
+            📁
+          </button>
           <button
             className="icon-btn"
             onClick={onLogToggle}

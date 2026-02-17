@@ -101,7 +101,9 @@ export type OneShotMessage =
   | { type: 'REFRESH_SOURCE'; folderId: number }
   | { type: 'LOAD_MORE' }
   | { type: 'FORCE_REINDEX' }
-  | { type: 'MOVE_VIDEO'; srcFolderId: number; dstFolderId: number; resourceId: string; resourceType: number };
+  | { type: 'MOVE_VIDEO'; srcFolderId: number; dstFolderId: number; resourceId: string; resourceType: number }
+  | { type: 'SORT_FOLDERS'; folderIds: number[] }
+  | { type: 'RENAME_FOLDER'; folderId: number; title: string };
 
 // Operation status response (for GET_INDEX_STATUS / GET_SUGGEST_STATUS)
 export interface OperationStatus {
@@ -179,6 +181,16 @@ export interface BiliVideoListResponse {
 }
 
 export interface BiliMoveResponse {
+  code: number;
+  message: string;
+}
+
+export interface BiliFolderSortResponse {
+  code: number;
+  message: string;
+}
+
+export interface BiliFolderEditResponse {
   code: number;
   message: string;
 }

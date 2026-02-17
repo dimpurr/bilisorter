@@ -6,6 +6,8 @@ import {
   fetchFolderSample,
   fetchVideos,
   moveVideo,
+  sortFolders,
+  renameFolder,
   RateLimitError,
 } from '../lib/bilibiliApi';
 import { generateSuggestions } from '../lib/aiApi';
@@ -119,6 +121,53 @@ export default defineBackground(() => {
         console.error('[BiliSorter] FORCE_REINDEX error:', error);
         sendResponse({ success: false, error: error.message });
       });
+      return true;
+    }
+
+    if (message.type === 'SORT_FOLDERS') {
+      const { folderIds } = message;
+      extractCookies()
+        .then((cookies) => {
+          if (!cookies) throw new Error('未登录');
+          return sortFolders(folderIds, cookies);
+        })
+        .then(async (result) => {
+          if (result.success) {
+            // Reorder folders in storage to match new order
+            const stored = await chrome.storage.local.get(STORAGE_KEYS.FOLDERS);
+            const currentFolders: Folder[] = stored[STORAGE_KEYS.FOLDERS] || [];
+            const folderMap = new Map(currentFolders.map(f => [f.id, f]));
+            const reordered = folderIds
+              .map(id => folderMap.get(id))
+              .filter((f): f is Folder => f !== undefined);
+            await chrome.storage.local.set({ [STORAGE_KEYS.FOLDERS]: reordered });
+          }
+          sendResponse(result);
+        })
+        .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
+    }
+
+    if (message.type === 'RENAME_FOLDER') {
+      const { folderId, title } = message;
+      extractCookies()
+        .then((cookies) => {
+          if (!cookies) throw new Error('未登录');
+          return renameFolder(folderId, title, cookies);
+        })
+        .then(async (result) => {
+          if (result.success) {
+            // Update folder name in storage
+            const stored = await chrome.storage.local.get(STORAGE_KEYS.FOLDERS);
+            const currentFolders: Folder[] = stored[STORAGE_KEYS.FOLDERS] || [];
+            const updated = currentFolders.map(f =>
+              f.id === folderId ? { ...f, name: title } : f
+            );
+            await chrome.storage.local.set({ [STORAGE_KEYS.FOLDERS]: updated });
+          }
+          sendResponse(result);
+        })
+        .catch((error) => sendResponse({ success: false, error: error.message }));
       return true;
     }
 

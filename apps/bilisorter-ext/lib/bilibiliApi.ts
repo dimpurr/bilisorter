@@ -5,6 +5,8 @@ import {
   BiliFolderListResponse,
   BiliVideoListResponse,
   BiliMoveResponse,
+  BiliFolderSortResponse,
+  BiliFolderEditResponse,
   Folder,
   Video,
 } from './types';
@@ -376,6 +378,100 @@ export async function moveVideo(
     return { success: true };
   } catch (error) {
     console.error('[BiliAPI] Error moving video:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Sort (reorder) all user folders.
+ * The sort param is a comma-separated list of ALL folder IDs in desired order.
+ * Matches B站's POST /x/v3/fav/folder/sort?sort=id1,id2,...&csrf=xxx
+ */
+export async function sortFolders(
+  folderIds: number[],
+  cookies: BiliCookies
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const headers = buildFetchHeaders(cookies);
+
+    const params = new URLSearchParams();
+    params.append('sort', folderIds.join(','));
+    params.append('csrf', cookies.bili_jct);
+
+    const response = await fetch(
+      `${BILIBILI_API_BASE}${BILI_API.FOLDER_SORT}?${params.toString()}`,
+      {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Length': '0',
+        },
+      }
+    );
+
+    const data = await safeParseBiliJson<BiliFolderSortResponse>(response, 'sortFolders');
+
+    if (data.code !== 0) {
+      return {
+        success: false,
+        error: data.message || `Error code: ${data.code}`,
+      };
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('[BiliAPI] Error sorting folders:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Rename a folder.
+ * POST /x/v3/fav/folder/edit with form-encoded media_id, title, csrf.
+ */
+export async function renameFolder(
+  folderId: number,
+  title: string,
+  cookies: BiliCookies
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const headers = buildFetchHeaders(cookies);
+
+    const formData = new URLSearchParams();
+    formData.append('media_id', folderId.toString());
+    formData.append('title', title);
+    formData.append('csrf', cookies.bili_jct);
+
+    const response = await fetch(
+      `${BILIBILI_API_BASE}${BILI_API.FOLDER_EDIT}`,
+      {
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: formData.toString(),
+      }
+    );
+
+    const data = await safeParseBiliJson<BiliFolderEditResponse>(response, 'renameFolder');
+
+    if (data.code !== 0) {
+      return {
+        success: false,
+        error: data.message || `Error code: ${data.code}`,
+      };
+    }
+
+    return { success: true };
+  } catch (error) {
+    console.error('[BiliAPI] Error renaming folder:', error);
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',

@@ -5,6 +5,7 @@ import SettingsPanel from './components/SettingsPanel';
 import VideoList from './components/VideoList';
 import ToastStack, { type Toast } from './components/ToastStack';
 import OperationLogModal from './components/OperationLogModal';
+import FolderManagerModal from './components/FolderManagerModal';
 import type { Folder, Video, SourceMeta, FolderIndexCheckpoint, Settings, Suggestion, AuthResponse, PortMessage, LogEntry } from '../../lib/types';
 import { STORAGE_KEYS, DEFAULT_SETTINGS, UI } from '../../lib/constants';
 import './App.css';
@@ -50,6 +51,9 @@ const App: React.FC = () => {
   // Operation log modal
   const [isLogModalOpen, setIsLogModalOpen] = useState(false);
   const [operationLog, setOperationLog] = useState<LogEntry[]>([]);
+
+  // Folder manager modal
+  const [isFolderManagerOpen, setIsFolderManagerOpen] = useState(false);
 
   // Folder index section collapsed state
   const [isFolderSectionCollapsed, setIsFolderSectionCollapsed] = useState(false);
@@ -475,6 +479,46 @@ const App: React.FC = () => {
     setToasts(prev => [...prev, newToast]);
   }, [folders, sourceFolderId, operationLog]);
 
+  // ─── Folder Manager Handlers ───
+
+  const handleFoldersReorder = useCallback(async (newFolders: Folder[]) => {
+    setFolders(newFolders);
+    const folderIds = newFolders.map(f => f.id);
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'SORT_FOLDERS',
+        folderIds,
+      });
+      if (!response?.success) {
+        console.error('[App] Sort folders failed:', response?.error);
+      }
+    } catch (error) {
+      console.error('[App] Sort folders error:', error);
+    }
+  }, []);
+
+  const handleFolderRename = useCallback(async (folderId: number, newName: string): Promise<boolean> => {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'RENAME_FOLDER',
+        folderId,
+        title: newName,
+      });
+      if (response?.success) {
+        // Update local folders state
+        setFolders(prev => prev.map(f =>
+          f.id === folderId ? { ...f, name: newName } : f
+        ));
+        return true;
+      }
+      console.error('[App] Rename folder failed:', response?.error);
+      return false;
+    } catch (error) {
+      console.error('[App] Rename folder error:', error);
+      return false;
+    }
+  }, []);
+
   // ─── Export Handler ───
 
   const handleExport = useCallback(() => {
@@ -544,7 +588,8 @@ const App: React.FC = () => {
           username={auth?.username}
           onSettingsToggle={() => setIsSettingsOpen(!isSettingsOpen)}
           onLogToggle={() => setIsLogModalOpen(true)}
-          hasSettingsDot={!settings.apiKey && auth?.loggedIn}
+          onFolderManager={() => setIsFolderManagerOpen(true)}
+          hasSettingsDot={!settings.apiKey && !settings.geminiApiKey && auth?.loggedIn}
         />
       </div>
 
@@ -754,6 +799,16 @@ const App: React.FC = () => {
           isOpen={isLogModalOpen}
           log={operationLog}
           onClose={() => setIsLogModalOpen(false)}
+        />
+      )}
+
+      {isFolderManagerOpen && (
+        <FolderManagerModal
+          isOpen={isFolderManagerOpen}
+          folders={folders}
+          onFoldersReorder={handleFoldersReorder}
+          onFolderRename={handleFolderRename}
+          onClose={() => setIsFolderManagerOpen(false)}
         />
       )}
     </div>
