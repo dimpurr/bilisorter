@@ -41,7 +41,8 @@ interface ClassificationResult {
 }
 
 /**
- * Generate AI suggestions for videos
+ * Generate AI suggestions for videos (incremental: skips videos that already have suggestions).
+ * Returns { results, failedCount }.
  */
 export async function generateSuggestions(
   videos: Video[],
@@ -49,8 +50,9 @@ export async function generateSuggestions(
   sourceFolderId: number,
   apiKey: string,
   model: string,
-  onProgress?: (completed: number, total: number) => void
-): Promise<Record<string, Suggestion[]>> {
+  onProgress?: (completed: number, total: number) => void,
+  existingSuggestions?: Record<string, Suggestion[]>
+): Promise<{ results: Record<string, Suggestion[]>; failedCount: number }> {
   // Filter out invalid videos and source folder
   const validVideos = videos.filter((v) => v.attr === 0);
   const targetFolders = folders.filter((f) => f.id !== sourceFolderId);
@@ -63,41 +65,69 @@ export async function generateSuggestions(
     throw new Error('没有有效视频');
   }
 
-  const results: Record<string, Suggestion[]> = {};
+  // Incremental: skip videos that already have suggestions
+  const existing = existingSuggestions || {};
+  const videosToProcess = validVideos.filter((v) => !existing[v.bvid]);
+
+  // Start with existing suggestions
+  const results: Record<string, Suggestion[]> = { ...existing };
+
+  if (videosToProcess.length === 0) {
+    console.log('[ClaudeAPI] All videos already have suggestions, nothing to do');
+    return { results, failedCount: 0 };
+  }
+
+  console.log('[ClaudeAPI] Processing', videosToProcess.length, 'videos (', validVideos.length - videosToProcess.length, 'already have suggestions)');
+
+  let failedCount = 0;
   const batchSize = AI_BATCH.MAX_BATCH_SIZE;
-  const batches = Math.ceil(validVideos.length / batchSize);
+  const batches = Math.ceil(videosToProcess.length / batchSize);
 
   for (let i = 0; i < batches; i++) {
-    const batchVideos = validVideos.slice(i * batchSize, (i + 1) * batchSize);
+    const batchVideos = videosToProcess.slice(i * batchSize, (i + 1) * batchSize);
+    let retries = 0;
+    let batchSuccess = false;
 
-    try {
-      const batchResults = await processBatch(
-        batchVideos,
-        targetFolders,
-        apiKey,
-        model
-      );
-
-      // Merge results
-      for (const [bvid, suggestions] of Object.entries(batchResults)) {
-        results[bvid] = suggestions;
-      }
-
-      onProgress?.(i + 1, batches);
-
-      // Delay between batches
-      if (i < batches - 1) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, AI_BATCH.INTER_BATCH_DELAY_MS)
+    while (retries <= AI_BATCH.MAX_RETRIES && !batchSuccess) {
+      try {
+        const batchResults = await processBatch(
+          batchVideos,
+          targetFolders,
+          apiKey,
+          model
         );
+
+        // Merge results
+        for (const [bvid, suggestions] of Object.entries(batchResults)) {
+          results[bvid] = suggestions;
+        }
+
+        batchSuccess = true;
+        onProgress?.(i + 1, batches);
+      } catch (error) {
+        retries++;
+        console.error(`[ClaudeAPI] Batch ${i + 1} attempt ${retries} failed:`, error);
+        if (retries <= AI_BATCH.MAX_RETRIES) {
+          const backoff = AI_BATCH.RETRY_BACKOFF_MS * retries;
+          console.log(`[ClaudeAPI] Retrying in ${backoff}ms...`);
+          await new Promise((resolve) => setTimeout(resolve, backoff));
+        } else {
+          // All retries exhausted — count as failed
+          failedCount += batchVideos.length;
+          onProgress?.(i + 1, batches);
+        }
       }
-    } catch (error) {
-      console.error(`[ClaudeAPI] Batch ${i + 1} failed:`, error);
-      // Continue with next batch
+    }
+
+    // Delay between batches
+    if (i < batches - 1) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, AI_BATCH.INTER_BATCH_DELAY_MS)
+      );
     }
   }
 
-  return results;
+  return { results, failedCount };
 }
 
 /**

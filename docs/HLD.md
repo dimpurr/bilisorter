@@ -8,7 +8,8 @@
 
 | Version | Summary |
 |---------|---------|
-| **v0.1** (current) | MVP: cookie auth, fetch folders & videos, Claude AI suggestions, one-click move with 5s undo toast, JSON export, persistent operation log |
+| **v0.1** | Initial MVP: single monolithic INDEX operation coupling folder sampling and full video fetch |
+| **v0.2** (current) | Three-pool architecture: separated folder indexing, paginated source video queue (60/page), incremental AI suggestions. Fixed Claude pipeline (1s batch delay, error reporting, incremental mode). New two-zone layout. |
 | **v1** (planned) | Multi-provider AI (Deepseek, OpenAI, Ollama), batch apply all, create folder from popup, duplicate detection |
 | **Future** | Side Panel UI, content script integration, smart folder suggestions, cross-folder analytics |
 
@@ -37,11 +38,11 @@
 │                        │                    │
 │  ┌─────────────────────┴──────────────────┐│
 │  │ chrome.storage.local                   ││
-│  │ • Cached video list                    ││
-│  │ • Cached folder list                   ││
-│  │ • AI suggestions cache                 ││
+│  │ • Pool 1: Folder index + samples       ││
+│  │ • Pool 2: Source video queue (60/page) ││
+│  │ • Pool 3: AI suggestions cache         ││
 │  │ • Operation log (permanent)            ││
-│  │ • Settings (API key, model)            ││
+│  │ • Settings (API key, model, source)    ││
 │  └────────────────────────────────────────┘│
 └────────────────────────────────────────────┘
         │                          │
@@ -144,34 +145,56 @@ Popup mounts
 → Popup: loggedIn ? show main UI (with cached data if available) : show "请先登录 bilibili.com"
 ```
 
-**Cache-first strategy**: On popup open, cached data is displayed immediately (no loading spinner). A "Last indexed: {timestamp}" label is shown. There is **no separate 🔄 Refresh button** — the "📥 索引" button serves as both initial index and refresh. Re-clicking it re-fetches everything and overwrites the cache. This follows the "用完即走" principle — popup opens instantly with last state.
+**Cache-first strategy**: On popup open, cached data is displayed immediately (no loading spinner). Both folder index and source videos are loaded from their separate caches. This follows the "用完即走" principle — popup opens instantly with last state.
 
-### 2. Index Favorites (Fetch Folders + Videos)
+### Three-Pool Architecture (v0.2)
+
+BiliSorter maintains three independent data pools with clear separation:
+
+| Pool | Storage Key | Trigger | Frequency | Rate Limit Risk |
+|------|-------------|---------|-----------|------------------|
+| **1. Folder Index** | `bilisorter_folders` + `bilisorter_folderSamples` + `bilisorter_folderIndexTime` | "📂 索引收藏夹" button | One-time, rarely re-done | High (~55 API calls) — has checkpoint |
+| **2. Source Videos** | `bilisorter_source_videos` + `bilisorter_source_meta` | Auto on folder select / "🔄 刷新" / "加载更多" | Per-session, manual refresh | Low (3 pages = 3 API calls) |
+| **3. AI Suggestions** | `bilisorter_suggestions` | "✨ 建议" button | On demand, incremental | N/A (Claude API) |
+
+### 2A. Index Folders (Structural Metadata)
 
 ```
-User clicks "📥 索引收藏夹"
+User clicks "📂 索引收藏夹"
 → Popup opens a Port to Background
-→ Port: {type: 'INDEX'}
-→ Background: read bilisorter_settings.sourceFolderId from chrome.storage.local
+→ Port: {type: 'INDEX_FOLDERS'}
 → Background: GET /x/v3/fav/folder/created/list-all?up_mid={uid}
 → Background: for each folder, GET /x/v3/fav/resource/list (ps=20, pn=random_page)
   → If media_count is 0: skip sampling (sampleTitles = [])
   → Otherwise: pick a random page number (1 to ceil(media_count/20))
   → Extract titles of up to 10 videos as random sample
   → Store as folder.sampleTitles: string[]
-→ Port: {type: 'FOLDERS_READY', folders}
-→ Popup: update folder dropdown
-→ Background: determine source folder:
-  → If settings.sourceFolderId exists and is in the folder list → use it
-  → Otherwise → use the first folder in the API response (默认收藏夹)
-→ Background: paginate GET /x/v3/fav/resource/list for source folder (ps=20, loop until !has_more)
-  → Port: {type: 'FETCH_PROGRESS', loaded, total} per page
-→ Port: {type: 'INDEX_COMPLETE', videos, sourceFolderId}
-→ Popup: display "{N} 个视频" count + video list + cache to chrome.storage.local (with timestamp)
+  → Checkpoint saved after each folder (crash-safe, 412-resumable)
+→ Port: {type: 'SAMPLING_PROGRESS', sampled, total, currentFolder}
+→ Port: {type: 'INDEX_FOLDERS_COMPLETE', folders, timestamp}
+→ Popup: save to storage, update folder dropdown, show summary "✓ 55 个收藏夹已索引"
 → Port closes
 ```
 
-**One-click auto-fetch**: Clicking "📥 索引" triggers BOTH folder fetching (with samples) AND video fetching from the determined source folder. It is a single user action. The background reads the previously saved source folder from settings; if none is saved, it defaults to 默认收藏夹 (first folder in the API response). If the user changes the source folder dropdown AFTER indexing, a new video fetch is triggered automatically (same Port-based flow, folders are reused from cache).
+This is a **structural operation** — it captures the folder hierarchy and representative samples for AI classification context. It does NOT fetch source videos. Checkpoint-resumable on 412.
+
+### 2B. Fetch Source Videos (Content Queue)
+
+```
+Auto-triggered when source folder is selected (or "🔄 刷新源" clicked)
+→ sendMessage({type: 'FETCH_SOURCE', folderId})
+→ Background: GET /x/v3/fav/resource/list for source folder (ps=20, pn=1..3 → 60 videos)
+→ Response: {success, videos, sourceMeta: {folderId, total, nextPage, hasMore}}
+→ Popup: display video list with "显示 60 / 2034 个视频"
+```
+
+This is a **content operation** — it populates the user's working queue. Only 3 pages (60 videos), completes in ~2 seconds, no checkpoint needed, almost no 412 risk.
+
+- **Load more**: `sendMessage({type: 'LOAD_MORE'})` → fetches next 3 pages, appends to existing source videos
+- **Refresh**: `sendMessage({type: 'REFRESH_SOURCE'})` → clears source videos, re-fetches first 60
+- **Folder change**: auto-triggers FETCH_SOURCE with new folderId
+
+These two operations (2A + 2B) replace the old monolithic "INDEX" flow.
 
 **默认收藏夹 identification**: B站's `list-all` API always returns 默认收藏夹 as the first folder in the response. The extension uses this convention (first folder = default) rather than matching by title string.
 
@@ -196,27 +219,33 @@ User clicks "📥 索引收藏夹"
 ### 3. Generate AI Suggestions
 
 ```
-User clicks "✨ 生成建议"
+User clicks "✨ 建议"
 → Popup opens a Port to Background
-→ Port: {type: 'GET_SUGGESTIONS', videos, folders}
-→ Background service worker (NOT popup) handles all Claude API calls:
-  → Filter out invalid videos (attr !== 0) and the source folder from folder list
-  → Batch valid videos into groups of 5-10
+→ Port: {type: 'GET_SUGGESTIONS'}
+→ Background: reads source videos + folders from storage
+  → Filter out invalid videos (attr !== 0)
+  → Filter out videos that already have suggestions (incremental mode)
+  → Exclude source folder from target folder list
+  → Batch remaining videos into groups of 10
   → For each batch:
-    → Construct prompt: folder context + video metadata (see Prompt Structure below)
-    → POST to Claude API (Haiku by default) — API key read from chrome.storage.local
+    → Construct prompt: folder context + video metadata
+    → POST to Claude API (Haiku by default)
     → Parse + validate JSON response
     → Port: {type: 'SUGGESTION_PROGRESS', completed, total}
-  → Inter-batch delay: 300ms
-→ Port: {type: 'SUGGESTIONS_COMPLETE', suggestions}
+  → Inter-batch delay: 1000ms (increased from 300ms for reliability)
+  → On batch failure: retry once with 2s backoff, then report error (NOT silent)
+→ Port: {type: 'SUGGESTIONS_COMPLETE', suggestions, failedCount}
 → Popup: display AI badges under each video card
-  → Each badge: "[收藏夹名称]" with confidence progress bar — clickable to move
 → Port closes
 ```
 
-**All AI calls happen in Background SW**: The API key is stored and read only in the background service worker. Popup sends video/folder data via Port, background makes the Claude API call, and pushes results back. This centralizes secret handling.
+**Scope**: AI suggestions are generated ONLY for currently loaded source videos (typically 60), not all videos in the folder. This means ~6 Claude API calls instead of ~99.
 
-**Re-generation**: If ✨ 建议 is clicked when suggestions already exist, all suggestions are regenerated from scratch, overwriting previous ones. No confirmation dialog — regeneration is non-destructive.
+**Incremental mode**: If user loads more videos after generating suggestions, clicking ✨ again only processes videos without existing suggestions. Previously suggested videos are preserved.
+
+**All AI calls happen in Background SW**: The API key is stored and read only in the background service worker. Background reads source videos and folders from storage directly — popup does NOT send video data over the Port.
+
+**Error reporting**: Failed batches are counted and reported in the completion message. No silent failure swallowing.
 
 #### Prompt Structure
 
@@ -355,7 +384,7 @@ No official documentation. Empirical observations:
 - Write endpoints: stricter, recommend ≤20 req/min
 - Rapid bursts may trigger captcha or temporary ban
 
-**Mitigation**: Sequential page fetching (no concurrency) for reads. 300ms delay between move API calls. Batch AI suggestions to minimize round-trips.
+**Mitigation**: Sequential page fetching (no concurrency) for reads. 500ms delay between folder sampling requests. Source video fetching: only 3 pages per load (60 videos), almost zero 412 risk. Folder sampling has checkpoint for 412 resume. 1000ms delay between Claude batch calls.
 
 ### Error Handling
 
@@ -373,17 +402,21 @@ No official documentation. Empirical observations:
 
 ## Persistence Schema
 
-All data stored in `chrome.storage.local` under namespaced keys.
+All data stored in `chrome.storage.local` under namespaced keys. **Three independent pools**:
 
-| Key | Type | Lifetime | Purpose |
-|-----|------|----------|---------|
-| `bilisorter_settings` | `{apiKey, model, sourceFolderId}` | Permanent | User configuration |
-| `bilisorter_folders` | `Folder[]` | Cached, invalidated on re-index | Folder list from B站 (includes `sampleTitles: string[]` per folder) |
-| `bilisorter_videos` | `Video[]` | Cached, invalidated on re-index | Video list from selected folder |
-| `bilisorter_suggestions` | `{[bvid]: Suggestion[]}` | Cached, cleared on re-index | AI suggestions keyed by video bvid |
-| `bilisorter_operation_log` | `LogEntry[]` | Permanent, append-only | Move operation history |
+| Key | Pool | Type | Lifetime | Purpose |
+|-----|------|------|----------|---------||
+| `bilisorter_settings` | — | `{apiKey, model, sourceFolderId}` | Permanent | User configuration |
+| `bilisorter_folders` | 1 | `Folder[]` | Cached, invalidated on re-index | Folder list (includes `sampleTitles`) |
+| `bilisorter_folderSamples` | 1 | `Record<string, string[]>` | Cached | Per-folder sample titles (written incrementally during sampling) |
+| `bilisorter_folderIndexTime` | 1 | `number` | Cached | Timestamp of last folder index |
+| `bilisorter_folderCheckpoint` | 1 | `FolderIndexCheckpoint` | Transient | Checkpoint for resumable folder sampling (cleared on completion) |
+| `bilisorter_source_videos` | 2 | `Video[]` | Session-cached | Currently loaded source videos (60-N) |
+| `bilisorter_source_meta` | 2 | `SourceMeta` | Session-cached | Source pagination state: {folderId, total, nextPage, hasMore, lastFetchTime} |
+| `bilisorter_suggestions` | 3 | `{[bvid]: Suggestion[]}` | Cached, cleared on source refresh | AI suggestions keyed by video bvid |
+| `bilisorter_operation_log` | — | `LogEntry[]` | Permanent, append-only | Move operation history |
 
-No IndexedDB. `chrome.storage.local` is sufficient for the data volumes involved (~1MB for 500 videos with suggestions).
+No IndexedDB. `chrome.storage.local` is sufficient for the data volumes involved (~200KB for 60 videos with suggestions).
 
 ---
 
@@ -392,64 +425,63 @@ No IndexedDB. `chrome.storage.local` is sufficient for the data volumes involved
 | Condition | What popup shows |
 |-----------|------------------|
 | Not logged in (SESSDATA missing/expired) | Full-area message: "请先登录 bilibili.com" with link. No action buttons visible except ⚙️. |
-| Logged in, no cache, no API key | Main UI with "📥 索引" enabled. "✨ 建议" disabled with hint "请先在 ⚙️ 设置中配置 Claude API Key". ⚙️ icon has a pulsing dot indicator. |
-| Logged in, no cache, API key set | Main UI with "📥 索引" enabled. All other buttons inactive until index completes. |
-| Source folder is empty (0 videos) | After index: "该收藏夹为空" message in list area. "✨ 建议" disabled. |
-| All videos are [已失效] | After index: list shows all grayed-out invalid videos. "✨ 建议" disabled with "没有有效视频可分析". |
-| Only 1 folder total (source = only folder) | After index: "没有目标收藏夹，请先在 B站 创建收藏夹" message. "✨ 建议" disabled. |
-| AI suggestions all failed | Toast: "⚠️ AI 分析失败：{error}". Videos remain in list without badges. User can retry. |
-| AI partially failed (some batches ok) | Successful suggestions displayed. Failed batches: toast "部分视频分析失败，已跳过 N 个". Videos without suggestions show no badges. |
+| Logged in, folders not indexed | Main UI with "📂 索引收藏夹" button prominent. Source area shows hint "请先索引收藏夹". |
+| Folders indexed, source not loaded | Folder summary shown ("✓ 55 个收藏夹"). Source area shows "待加载 — 选择源收藏夹后自动加载". |
+| Source folder is empty (0 videos) | "该收藏夹为空" message in source area. |
+| All videos are [已失效] | Source area shows grayed-out list. "✨ 建议" disabled + "没有有效视频可分析". |
+| Only 1 folder total | "没有目标收藏夹，请先在 B站 创建收藏夹" message. |
+| No API key when clicking ✨ | Toast: "请先在 ⚙️ 设置中配置 Claude API Key". ⚙️ pulsing dot. |
+| AI suggestions all failed | Toast: "⚠️ AI 分析失败：{error}". Videos remain without badges. |
+| AI partially failed | Successful suggestions displayed. Toast: "部分视频分析失败，已跳过 N 个". |
 
-**Button states across all conditions**: 📤 导出 is disabled when no indexed data exists. 📋 日志 is always enabled (shows "暂无操作记录" if log is empty). ⚙️ is always accessible in all states.
+**Button states**: 📤 导出 disabled when no source videos loaded. 📋 日志 always enabled. ⚙️ always accessible.
 
 ---
 
-## UI Layout (Popup)
+## UI Layout (Popup) — Two-Zone Architecture
 
 ```
-┌─────────────────────────────────────── 400px ──┐
-│  BiliSorter                    ⚙️ Settings     │
-│───────────────────────────────────────────────│
-│  [未登录状态] 请先登录 bilibili.com             │
-│  ─── OR ───                                    │
-│  👤 {username}  📁 源: [默认收藏夹 ▾]           │
-│  [📥 索引] [✨ 建议] [📤 导出] [📋 日志]        │
-│───────────────────────────────────────────────│
-│  正在索引... 45/234                             │
-│───────────────────────────────────────────────│
-│  ┌─────────────────────────────────────────┐  │
-│  │ 🖼 视频标题文字较长会截断显示...          │  │
-│  │    UP主 · 12.3万播放 · 2024-01-15        │  │
-│  │    [████ 编程技术] [███ 科技数码] [█ 音乐]│  │
-│  ├─────────────────────────────────────────┤  │
-│  │ 🖼 另一个视频标题...                      │  │
-│  │    UP主 · 5.1万播放 · 2024-03-22          │  │
-│  │    [█████ 音乐收藏] [██ 娱乐] ...        │  │
-│  ├─────────────────────────────────────────┤  │
-│  │ ⚠️ [已失效] 已被删除的视频                │  │
-│  │    (灰显，无建议)                          │  │
-│  └─────────────────────────────────────────┘  │
-│  ... (scrollable)                              │
-│───────────────────────────────────────────────│
-│  ✅ 已移动《视频标题》到 [编程技术] — 撤销  5s │
-└───────────────────────────────────────────────┘
+┌──────────────────────────────────────── 400px ──┐
+│  BiliSorter    👤{user}    [📋 日志] [⚙️]       │  ← Global header
+│─── ZONE 1: Folder Index (collapsible) ─────────│
+│  📂 55 个收藏夹已索引 ✓         [重新索引]       │  ← Success: one-line summary
+│  上次索引: 10分钟前                               │
+│═════════════════════════════════════════════════│
+│─── ZONE 2: Source Operations ──────────────────│
+│  📁 源: [默认收藏夹 ▾]             [🔄 刷新]     │  ← Source selector + refresh
+│  显示 60 / 2034 个视频                            │  ← Loaded / Total
+│  [✨ 建议]  [📤 导出]                             │  ← Source-scoped actions
+│────────────────────────────────────────────────│
+│  ┌──────────────────────────────────────────┐  │
+│  │ 🖼 视频标题文字较长会截断显示...           │  │
+│  │    UP主 · 12.3万播放                       │  │
+│  │    [████ 编程技术] [███ 科技数码]           │  │
+│  ├──────────────────────────────────────────┤  │
+│  │ ...                                       │  │
+│  └──────────────────────────────────────────┘  │
+│         [加载更多 (已加载 60/2034)]              │
+│────────────────────────────────────────────────│
+│  ✅ 已移动《视频标题》→ [编程技术] — 撤销 5s    │
+└────────────────────────────────────────────────┘
 ```
 
-**Design constraints**:
-- Popup width: 400px (fixed)
-- Popup max height: 600px (Chrome limit)
-- Dark theme (match B站 dark mode: `#17181A` background)
+**Two-zone architecture**:
+- **Zone 1 (Folder Index)**: Global structural operation. Shows folder sampling progress during indexing, collapses to a one-line summary ("✓ 55 个收藏夹已索引") after completion. "[重新索引]" to redo. Checkpoint-aware (resume from 412).
+- **Zone 2 (Source)**: Content working area. Source folder selector, refresh button, video count ("60/2034"), ✨/📤 action buttons, video list, load more. All scoped to the currently selected source folder.
+
+**Key UX improvements over v0.1**:
+- Only two numbers visible: folder count (55) and video count (60/2034) — never confused
+- Source videos show only the first 60, not all 987/2K
+- AI suggestions process 60 videos (6 batches) not 987 (99 batches)
+- 📋 日志 and ⚙️ promoted to global header (always accessible, not buried in button bar)
+
+**Design constraints** (unchanged):
+- Popup width: 400px (fixed), max height: 600px
+- Dark theme (`#17181A` background)
 - Video thumbnails: 60×45px inline
-- AI badges: pill-shaped, each with a small colored confidence progress bar:
-  - ≥80% — green bar
-  - 50-79% — yellow/amber bar
-  - <50% — grey bar (de-emphasized but still visible and clickable)
-  - Up to min(5, available_folders) badges per video, visually ranked by confidence
-- Toasts: stacked vertically from bottom of popup, max 5 visible, auto-dismiss after 5s each
-- Scroll: header (username + source dropdown) and button bar are **sticky** at the top. Video list area scrolls independently (`overflow-y: auto`). No virtual scroll in v0.1
-- Video count: "{N} 个视频" label shown above the list area after indexing completes
-- Video title: clickable → opens B站 video page (`bilibili.com/video/{bvid}`) in new tab
-- Duplicate folder names: if multiple folders share the same name, display item count to disambiguate — e.g., "音乐 (42)" vs "音乐 (7)". Applies to source folder dropdown and AI suggestion badges
+- AI badges: pill-shaped with colored confidence bar (≥80% green, 50-79% amber, <50% grey)
+- Toasts: stacked from bottom, max 5, auto-dismiss after 5s
+- Duplicate folder names: disambiguate with item count
 
 ---
 

@@ -1,17 +1,24 @@
-// BiliSorter - Constants
+// BiliSorter - Constants (v0.2 Three-Pool Architecture)
 
 // API Base URLs
 export const BILIBILI_API_BASE = 'https://api.bilibili.com';
 export const BILIBILI_WEB_BASE = 'https://www.bilibili.com';
 export const CLAUDE_API_BASE = 'https://api.anthropic.com';
 
-// Storage Keys
+// Storage Keys (mirrors types.ts)
 export const STORAGE_KEYS = {
   SETTINGS: 'bilisorter_settings',
+  // Pool 1: Folder Index
   FOLDERS: 'bilisorter_folders',
-  VIDEOS: 'bilisorter_videos',
-  VIDEO_META: 'bilisorter_videoMeta',
+  FOLDER_SAMPLES: 'bilisorter_folderSamples',
+  FOLDER_INDEX_TIME: 'bilisorter_folderIndexTime',
+  FOLDER_CHECKPOINT: 'bilisorter_folderCheckpoint',
+  // Pool 2: Source Videos
+  SOURCE_VIDEOS: 'bilisorter_source_videos',
+  SOURCE_META: 'bilisorter_source_meta',
+  // Pool 3: AI Suggestions
   SUGGESTIONS: 'bilisorter_suggestions',
+  // Global
   OPERATION_LOG: 'bilisorter_operation_log',
 } as const;
 
@@ -35,6 +42,19 @@ export const CLAUDE_API = {
   MESSAGES: '/v1/messages',
 } as const;
 
+// Source Video Pagination
+export const SOURCE = {
+  PAGE_SIZE: 20, // B站 API page size
+  PAGES_PER_LOAD: 3, // 3 pages × 20 = 60 videos per load
+  PAGE_DELAY_MS: 500, // delay between page fetches
+} as const;
+
+// Folder Sampling
+export const SAMPLING = {
+  DELAY_MS: 500, // delay between folder sample requests
+  COOLDOWN_MS: 5000, // cooldown after completing sampling before any video fetches
+} as const;
+
 // UI Constants
 export const UI = {
   POPUP_WIDTH: 400,
@@ -51,8 +71,9 @@ export const UI = {
 export const AI_BATCH = {
   MIN_BATCH_SIZE: 5,
   MAX_BATCH_SIZE: 10,
-  INTER_BATCH_DELAY_MS: 300,
-  MAX_RETRIES: 1,
+  INTER_BATCH_DELAY_MS: 1000, // increased from 300ms for reliability
+  MAX_RETRIES: 2, // increased from 1
+  RETRY_BACKOFF_MS: 2000, // backoff on retry
   RATE_LIMIT_PAUSE_MS: 30000, // 30s
 } as const;
 

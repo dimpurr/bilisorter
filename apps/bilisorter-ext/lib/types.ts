@@ -1,16 +1,24 @@
-// BiliSorter - TypeScript Type Definitions
+// BiliSorter - TypeScript Type Definitions (v0.2 Three-Pool Architecture)
 
-// Storage Keys
+// ─── Storage Keys ───
+
 export const STORAGE_KEYS = {
   SETTINGS: 'bilisorter_settings',
+  // Pool 1: Folder Index
   FOLDERS: 'bilisorter_folders',
-  VIDEOS: 'bilisorter_videos',
-  VIDEO_META: 'bilisorter_videoMeta',
+  FOLDER_SAMPLES: 'bilisorter_folderSamples',
+  FOLDER_INDEX_TIME: 'bilisorter_folderIndexTime',
+  FOLDER_CHECKPOINT: 'bilisorter_folderCheckpoint',
+  // Pool 2: Source Videos
+  SOURCE_VIDEOS: 'bilisorter_source_videos',
+  SOURCE_META: 'bilisorter_source_meta',
+  // Pool 3: AI Suggestions
   SUGGESTIONS: 'bilisorter_suggestions',
+  // Global
   OPERATION_LOG: 'bilisorter_operation_log',
 } as const;
 
-// Core Data Types
+// ─── Core Data Types ───
 
 export interface Folder {
   id: number;
@@ -55,17 +63,38 @@ export interface Settings {
   sourceFolderId: number | null;
 }
 
-// Message Types for Communication
+// ─── Pool 2: Source Meta ───
+
+export interface SourceMeta {
+  folderId: number;
+  total: number;
+  nextPage: number;
+  hasMore: boolean;
+  lastFetchTime: number;
+}
+
+// ─── Pool 1: Folder Index Checkpoint ───
+
+export interface FolderIndexCheckpoint {
+  uid: string;
+  foldersSampled: number[]; // IDs of folders already sampled
+  totalFolders: number;
+  timestamp: number;
+}
+
+// ─── Message Types ───
 
 // One-shot messages via sendMessage
 export type OneShotMessage =
   | { type: 'CHECK_AUTH' }
   | { type: 'GET_INDEX_STATUS' }
   | { type: 'GET_SUGGEST_STATUS' }
-  | { type: 'LOAD_MORE_VIDEOS' }
-  | { type: 'MOVE_VIDEO'; srcFolderId: number; dstFolderId: number; resourceId: string; resourceType: number }
-  | { type: 'INDEX' }
-  | { type: 'GET_SUGGESTIONS'; videos: Video[]; folders: Folder[] };
+  | { type: 'GET_COOKIES' }
+  | { type: 'FETCH_SOURCE'; folderId: number }
+  | { type: 'REFRESH_SOURCE'; folderId: number }
+  | { type: 'LOAD_MORE' }
+  | { type: 'FORCE_REINDEX' }
+  | { type: 'MOVE_VIDEO'; srcFolderId: number; dstFolderId: number; resourceId: string; resourceType: number };
 
 // Operation status response (for GET_INDEX_STATUS / GET_SUGGEST_STATUS)
 export interface OperationStatus {
@@ -76,29 +105,28 @@ export interface OperationStatus {
 
 // Port-based messages for long-running operations
 export type PortMessage =
+  // Folder indexing (Port: INDEX_FOLDERS)
+  | { type: 'INDEX_FOLDERS' }
   | { type: 'FOLDERS_READY'; folders: Folder[] }
-  | { type: 'FETCH_PROGRESS'; loaded: number; total: number }
-  | { type: 'INDEX_COMPLETE'; videos: Video[]; sourceFolderId: number; timestamp: number; hasMore: boolean; totalVideoCount: number }
+  | { type: 'SAMPLING_PROGRESS'; sampled: number; total: number; currentFolder: string }
+  | { type: 'INDEX_FOLDERS_COMPLETE'; folders: Folder[]; timestamp: number }
+  | { type: 'INDEX_FOLDERS_PAUSED'; reason: string; sampled: number; totalFolders: number }
+  // AI suggestions (Port: GET_SUGGESTIONS)
+  | { type: 'GET_SUGGESTIONS' }
   | { type: 'SUGGESTION_PROGRESS'; completed: number; total: number }
-  | { type: 'SUGGESTIONS_COMPLETE'; suggestions: Record<string, Suggestion[]> }
+  | { type: 'SUGGESTIONS_COMPLETE'; suggestions: Record<string, Suggestion[]>; failedCount: number }
+  // Shared
   | { type: 'ERROR'; error: string };
 
-// Video pagination metadata
-export interface VideoMeta {
-  sourceFolderId: number;
-  nextPage: number;
-  hasMore: boolean;
-  total: number;
-}
+// ─── Auth Response ───
 
-// Auth Response
 export interface AuthResponse {
   loggedIn: boolean;
   uid?: string;
   username?: string;
 }
 
-// Bilibili API Response Types
+// ─── Bilibili API Response Types ───
 
 export interface BiliNavResponse {
   code: number;

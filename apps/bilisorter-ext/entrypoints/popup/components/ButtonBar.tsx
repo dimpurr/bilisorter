@@ -5,6 +5,8 @@ interface ButtonBarProps {
   onSuggest: () => void;
   onExport: () => void;
   onLog: () => void;
+  onForceReindex?: () => void;
+  indexButtonLabel: string;
   canIndex: boolean;
   canSuggest: boolean;
   canExport: boolean;
@@ -16,6 +18,8 @@ const ButtonBar: React.FC<ButtonBarProps> = ({
   onSuggest,
   onExport,
   onLog,
+  onForceReindex,
+  indexButtonLabel,
   canIndex,
   canSuggest,
   canExport,
@@ -27,10 +31,20 @@ const ButtonBar: React.FC<ButtonBarProps> = ({
         className="btn btn-primary"
         onClick={onIndex}
         disabled={!canIndex}
-        title="索引收藏夹"
+        title="索引收藏夹 (从断点续传)"
       >
-        📥 索引
+        {indexButtonLabel}
       </button>
+      {hasIndexedData && onForceReindex && (
+        <button
+          className="btn btn-secondary btn-small"
+          onClick={onForceReindex}
+          disabled={!canIndex}
+          title="清除缓存并重新索引"
+        >
+          🗑
+        </button>
+      )}
       <button
         className="btn btn-primary"
         onClick={onSuggest}

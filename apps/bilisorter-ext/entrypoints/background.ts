@@ -6,25 +6,26 @@ import {
   fetchFolderSample,
   fetchVideos,
   moveVideo,
+  RateLimitError,
 } from '../lib/bilibiliApi';
 import { generateSuggestions } from '../lib/claudeApi';
 import type {
   AuthResponse,
   Folder,
   Video,
-  VideoMeta,
-  BiliCookies,
+  SourceMeta,
+  FolderIndexCheckpoint,
   PortMessage,
 } from '../lib/types';
-import { STORAGE_KEYS } from '../lib/constants';
+import { STORAGE_KEYS, SAMPLING, SOURCE } from '../lib/constants';
 
 export default defineBackground(() => {
-  console.log('[BiliSorter] Background service worker started');
+  console.log('[BiliSorter] Background service worker started (v0.2 three-pool)');
 
   // Track active ports for cleanup
   const activePorts = new Map<string, chrome.runtime.Port>();
 
-  // Track in-progress operations so popup can recover state on reopen
+  // Track in-progress operations
   let indexStatus: {
     inProgress: boolean;
     progress?: string;
@@ -39,20 +40,19 @@ export default defineBackground(() => {
 
   /**
    * Safely post a message to a port, catching errors if port is disconnected.
-   * Returns false if the port is disconnected.
    */
   function safePostMessage(port: chrome.runtime.Port, message: PortMessage): boolean {
     try {
       port.postMessage(message);
       return true;
     } catch (e) {
-      // Port disconnected — popup was closed. Continue operation silently.
       console.log('[BiliSorter] Port disconnected, continuing operation in background');
       return false;
     }
   }
 
-  // Handle one-shot messages
+  // ─── One-shot message handlers ───
+
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'CHECK_AUTH') {
       handleCheckAuth().then(sendResponse).catch((error) => {
@@ -78,7 +78,7 @@ export default defineBackground(() => {
     }
 
     if (message.type === 'MOVE_VIDEO') {
-      const { srcFolderId, dstFolderId, resourceId, resourceType } = message;
+      const { srcFolderId, dstFolderId, resourceId } = message;
       extractCookies()
         .then((cookies) => {
           if (!cookies) throw new Error('未登录');
@@ -89,9 +89,33 @@ export default defineBackground(() => {
       return true;
     }
 
-    if (message.type === 'LOAD_MORE_VIDEOS') {
+    if (message.type === 'FETCH_SOURCE') {
+      handleFetchSource(message.folderId).then(sendResponse).catch((error) => {
+        console.error('[BiliSorter] FETCH_SOURCE error:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+      return true;
+    }
+
+    if (message.type === 'REFRESH_SOURCE') {
+      handleRefreshSource(message.folderId).then(sendResponse).catch((error) => {
+        console.error('[BiliSorter] REFRESH_SOURCE error:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+      return true;
+    }
+
+    if (message.type === 'LOAD_MORE') {
       handleLoadMore().then(sendResponse).catch((error) => {
-        console.error('[BiliSorter] LOAD_MORE_VIDEOS error:', error);
+        console.error('[BiliSorter] LOAD_MORE error:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+      return true;
+    }
+
+    if (message.type === 'FORCE_REINDEX') {
+      handleForceReindex().then(sendResponse).catch((error) => {
+        console.error('[BiliSorter] FORCE_REINDEX error:', error);
         sendResponse({ success: false, error: error.message });
       });
       return true;
@@ -100,16 +124,17 @@ export default defineBackground(() => {
     return false;
   });
 
-  // Handle port connections for long-running operations
+  // ─── Port-based message handlers ───
+
   chrome.runtime.onConnect.addListener((port) => {
     console.log('[BiliSorter] Port connected:', port.name);
     activePorts.set(port.name, port);
 
     port.onMessage.addListener((message: PortMessage) => {
-      if (message.type === 'INDEX') {
-        handleIndex(port);
+      if (message.type === 'INDEX_FOLDERS') {
+        handleIndexFolders(port);
       } else if (message.type === 'GET_SUGGESTIONS') {
-        handleGetSuggestions(port, message.videos, message.folders);
+        handleGetSuggestions(port);
       }
     });
 
@@ -119,23 +144,40 @@ export default defineBackground(() => {
     });
   });
 
+  // ─── Auth ───
+
   async function handleCheckAuth(): Promise<AuthResponse> {
     const cookies = await extractCookies();
-
     if (!cookies) {
-      console.log('[BiliSorter] No valid cookies found');
       return { loggedIn: false };
     }
-
     const authResult = await checkAuth(cookies);
-    console.log('[BiliSorter] Auth check result:', authResult);
     return authResult;
   }
 
-  async function handleIndex(port: chrome.runtime.Port): Promise<void> {
-    console.log('[BiliSorter] Starting index operation');
+  // ─── Pool 1: Folder Index (checkpoint-aware) ───
 
-    // Prevent duplicate index operations
+  async function loadCheckpoint(): Promise<FolderIndexCheckpoint | null> {
+    const result = await chrome.storage.local.get(STORAGE_KEYS.FOLDER_CHECKPOINT);
+    return result[STORAGE_KEYS.FOLDER_CHECKPOINT] || null;
+  }
+
+  async function saveCheckpoint(checkpoint: FolderIndexCheckpoint): Promise<void> {
+    await chrome.storage.local.set({ [STORAGE_KEYS.FOLDER_CHECKPOINT]: checkpoint });
+  }
+
+  async function loadFolderSamples(): Promise<Record<string, string[]>> {
+    const result = await chrome.storage.local.get(STORAGE_KEYS.FOLDER_SAMPLES);
+    return result[STORAGE_KEYS.FOLDER_SAMPLES] || {};
+  }
+
+  async function saveFolderSamples(samples: Record<string, string[]>): Promise<void> {
+    await chrome.storage.local.set({ [STORAGE_KEYS.FOLDER_SAMPLES]: samples });
+  }
+
+  async function handleIndexFolders(port: chrome.runtime.Port): Promise<void> {
+    console.log('[BiliSorter] Starting folder index (Pool 1)');
+
     if (indexStatus.inProgress) {
       safePostMessage(port, { type: 'ERROR', error: '索引操作已在进行中' });
       return;
@@ -144,7 +186,6 @@ export default defineBackground(() => {
     indexStatus = { inProgress: true, progress: '正在连接...' };
 
     try {
-      // Extract cookies
       const cookies = await extractCookies();
       if (!cookies) {
         indexStatus = { inProgress: false, error: '未登录' };
@@ -152,7 +193,6 @@ export default defineBackground(() => {
         return;
       }
 
-      // Check auth to get UID
       const authResult = await checkAuth(cookies);
       if (!authResult.loggedIn || !authResult.uid) {
         indexStatus = { inProgress: false, error: '登录已过期' };
@@ -162,199 +202,227 @@ export default defineBackground(() => {
 
       const uid = authResult.uid;
 
-      // Fetch folders
-      console.log('[BiliSorter] Fetching folders for uid:', uid);
+      // Always fetch fresh folder list (1 API call)
+      indexStatus.progress = '正在获取收藏夹列表...';
       const folders = await fetchFolders(uid, cookies);
       console.log('[BiliSorter] Fetched', folders.length, 'folders');
 
-      // Sample titles from each folder with adaptive rate limiting
-      const SAMPLE_BASE_DELAY = 500;       // 500ms between requests
-      const SAMPLE_BATCH_SIZE = 15;        // pause every 15 folders
-      const SAMPLE_BATCH_COOLDOWN = 2000;  // 2s cooldown between batches
-      const SAMPLE_RETRY_DELAY = 3000;     // 3s wait before retry on 412
+      // Load or create checkpoint
+      let checkpoint = await loadCheckpoint();
+      if (!checkpoint || checkpoint.uid !== uid) {
+        checkpoint = {
+          uid,
+          foldersSampled: [],
+          totalFolders: folders.length,
+          timestamp: Date.now(),
+        };
+        await saveCheckpoint(checkpoint);
+      }
 
-      for (let i = 0; i < folders.length; i++) {
-        const folder = folders[i];
-        if (folder.media_count > 0) {
-          let sampled = false;
+      // Load cached folder samples and apply to folders
+      const folderSamples = await loadFolderSamples();
+      const sampledSet = new Set(checkpoint.foldersSampled);
 
-          // First attempt
-          try {
-            const sampleTitles = await fetchFolderSample(
-              folder.id,
-              folder.media_count,
-              cookies
-            );
-            folder.sampleTitles = sampleTitles;
-            sampled = true;
-          } catch (error) {
-            console.warn('[BiliSorter] Sample attempt 1 failed for folder', folder.id, error);
-          }
-
-          // Retry once after 3s if first attempt failed (likely 412)
-          if (!sampled) {
-            console.log('[BiliSorter] Retrying folder', folder.id, 'after', SAMPLE_RETRY_DELAY, 'ms');
-            await new Promise((resolve) => setTimeout(resolve, SAMPLE_RETRY_DELAY));
-            try {
-              const sampleTitles = await fetchFolderSample(
-                folder.id,
-                folder.media_count,
-                cookies
-              );
-              folder.sampleTitles = sampleTitles;
-            } catch (error) {
-              console.warn('[BiliSorter] Sample attempt 2 failed for folder', folder.id, '— skipping');
-              folder.sampleTitles = [];
-            }
-          }
-        }
-
-        // Send progress update (safe — won't crash if popup closed)
-        indexStatus.progress = `采样收藏夹 ${i + 1}/${folders.length}...`;
-        safePostMessage(port, {
-          type: 'FOLDERS_READY',
-          folders: folders.slice(0, i + 1),
-        });
-
-        // Rate limiting: 500ms base delay + 2s cooldown every 15 folders
-        if (i < folders.length - 1) {
-          const isBatchBoundary = (i + 1) % SAMPLE_BATCH_SIZE === 0;
-          const delay = isBatchBoundary
-            ? SAMPLE_BASE_DELAY + SAMPLE_BATCH_COOLDOWN
-            : SAMPLE_BASE_DELAY;
-          await new Promise((resolve) => setTimeout(resolve, delay));
+      for (const folder of folders) {
+        const cached = folderSamples[String(folder.id)];
+        if (cached) {
+          folder.sampleTitles = cached;
         }
       }
 
-      // Save folders to storage immediately (in case popup is closed)
-      await chrome.storage.local.set({
-        [STORAGE_KEYS.FOLDERS]: folders,
-      });
+      // Send initial folders (with cached samples)
+      safePostMessage(port, { type: 'FOLDERS_READY', folders });
 
-      // Determine source folder
-      const settings = await chrome.storage.local.get(STORAGE_KEYS.SETTINGS);
-      const sourceFolderId =
-        settings[STORAGE_KEYS.SETTINGS]?.sourceFolderId || folders[0]?.id;
+      // Sample remaining folders
+      const foldersToSample = folders.filter(
+        (f) => f.media_count > 0 && !sampledSet.has(f.id)
+      );
 
-      if (!sourceFolderId) {
-        indexStatus = { inProgress: false, error: '没有找到收藏夹' };
-        safePostMessage(port, { type: 'ERROR', error: '没有找到收藏夹' });
-        return;
+      console.log('[BiliSorter] Sampling', foldersToSample.length, 'remaining folders (', sampledSet.size, 'already cached)');
+
+      for (let i = 0; i < foldersToSample.length; i++) {
+        const folder = foldersToSample[i];
+        const overallProgress = sampledSet.size + i + 1;
+
+        indexStatus.progress = `采样收藏夹 ${overallProgress}/${folders.length} — ${folder.name}`;
+        safePostMessage(port, {
+          type: 'SAMPLING_PROGRESS',
+          sampled: overallProgress,
+          total: folders.length,
+          currentFolder: folder.name,
+        });
+
+        try {
+          const sampleTitles = await fetchFolderSample(folder.id, folder.media_count, cookies);
+          folder.sampleTitles = sampleTitles;
+
+          // Persist immediately (crash-safe)
+          folderSamples[String(folder.id)] = sampleTitles;
+          checkpoint.foldersSampled.push(folder.id);
+          await saveFolderSamples(folderSamples);
+          await saveCheckpoint(checkpoint);
+
+        } catch (error) {
+          if (error instanceof RateLimitError) {
+            console.log('[BiliSorter] Rate limited during sampling at folder', folder.id);
+            await saveFolderSamples(folderSamples);
+            await saveCheckpoint(checkpoint);
+            await chrome.storage.local.set({ [STORAGE_KEYS.FOLDERS]: folders });
+
+            indexStatus = { inProgress: false, progress: `已暂停 — 已采样 ${sampledSet.size + i}/${folders.length} 收藏夹` };
+            safePostMessage(port, {
+              type: 'INDEX_FOLDERS_PAUSED',
+              reason: '触发B站速率限制 (412)，请稍后继续',
+              sampled: sampledSet.size + i,
+              totalFolders: folders.length,
+            });
+            return;
+          }
+          // Non-rate-limit error — skip this folder
+          console.warn('[BiliSorter] Error sampling folder', folder.id, '— skipping:', error);
+          folder.sampleTitles = [];
+        }
+
+        if (i < foldersToSample.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, SAMPLING.DELAY_MS));
+        }
       }
 
-      // Fetch first batch of videos from source folder (max 3 pages = ~60 videos)
-      console.log('[BiliSorter] Fetching videos from folder:', sourceFolderId);
-      indexStatus.progress = '正在获取视频...';
-      const result = await fetchVideos(sourceFolderId, cookies, (count, total) => {
-        indexStatus.progress = `正在获取视频... ${count}/${total}`;
-        safePostMessage(port, {
-          type: 'FETCH_PROGRESS',
-          loaded: count,
-          total,
-        });
-      });
-
-      const { videos, total: totalVideoCount, hasMore, nextPage } = result;
-      console.log('[BiliSorter] Fetched', videos.length, 'of', totalVideoCount, 'videos, hasMore:', hasMore);
-
-      // Save video pagination metadata
-      const videoMeta: VideoMeta = {
-        sourceFolderId,
-        nextPage,
-        hasMore,
-        total: totalVideoCount,
-      };
-
-      // Complete — save results to storage regardless of port status
+      // All folders sampled — save and clear checkpoint
       const timestamp = Date.now();
       await chrome.storage.local.set({
         [STORAGE_KEYS.FOLDERS]: folders,
-        [STORAGE_KEYS.VIDEOS]: videos,
-        [STORAGE_KEYS.VIDEO_META]: videoMeta,
-        bilisorter_lastIndexed: timestamp,
+        [STORAGE_KEYS.FOLDER_INDEX_TIME]: timestamp,
       });
+      await chrome.storage.local.remove(STORAGE_KEYS.FOLDER_CHECKPOINT);
 
       indexStatus = { inProgress: false };
       safePostMessage(port, {
-        type: 'INDEX_COMPLETE',
-        videos,
-        sourceFolderId,
+        type: 'INDEX_FOLDERS_COMPLETE',
+        folders,
         timestamp,
-        hasMore,
-        totalVideoCount,
       });
 
-      console.log('[BiliSorter] Index operation complete');
+      console.log('[BiliSorter] Folder index complete —', folders.length, 'folders sampled');
+
     } catch (error) {
-      console.error('[BiliSorter] Index operation failed:', error);
+      console.error('[BiliSorter] Folder index failed:', error);
       const errorMsg = error instanceof Error ? error.message : '未知错误';
       indexStatus = { inProgress: false, error: errorMsg };
-      safePostMessage(port, {
-        type: 'ERROR',
-        error: errorMsg,
-      });
+      safePostMessage(port, { type: 'ERROR', error: errorMsg });
     }
   }
 
-  /**
-   * Load more videos from the source folder (next 3 pages).
-   * Appends to existing cached videos.
-   */
-  async function handleLoadMore(): Promise<{
+  // ─── Pool 2: Source Videos (one-shot, fast) ───
+
+  async function handleFetchSource(folderId: number): Promise<{
     success: boolean;
     videos?: Video[];
-    hasMore?: boolean;
-    totalVideoCount?: number;
+    sourceMeta?: SourceMeta;
     error?: string;
   }> {
     try {
       const cookies = await extractCookies();
       if (!cookies) return { success: false, error: '未登录' };
 
-      // Read current video meta
+      console.log('[BiliSorter] Fetching source videos from folder:', folderId);
+
+      const result = await fetchVideos(
+        folderId,
+        cookies,
+        undefined,
+        1, // start from page 1
+        SOURCE.PAGES_PER_LOAD // 3 pages = 60 videos
+      );
+
+      const sourceMeta: SourceMeta = {
+        folderId,
+        total: result.total,
+        nextPage: result.nextPage,
+        hasMore: result.hasMore,
+        lastFetchTime: Date.now(),
+      };
+
+      await chrome.storage.local.set({
+        [STORAGE_KEYS.SOURCE_VIDEOS]: result.videos,
+        [STORAGE_KEYS.SOURCE_META]: sourceMeta,
+      });
+
+      console.log('[BiliSorter] Fetched', result.videos.length, 'source videos, total:', result.total);
+
+      return { success: true, videos: result.videos, sourceMeta };
+    } catch (error) {
+      console.error('[BiliSorter] Fetch source failed:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : '未知错误',
+      };
+    }
+  }
+
+  async function handleRefreshSource(folderId: number): Promise<{
+    success: boolean;
+    videos?: Video[];
+    sourceMeta?: SourceMeta;
+    error?: string;
+  }> {
+    // Clear existing source data and suggestions
+    await chrome.storage.local.remove([
+      STORAGE_KEYS.SOURCE_VIDEOS,
+      STORAGE_KEYS.SOURCE_META,
+      STORAGE_KEYS.SUGGESTIONS,
+    ]);
+    return handleFetchSource(folderId);
+  }
+
+  async function handleLoadMore(): Promise<{
+    success: boolean;
+    videos?: Video[];
+    sourceMeta?: SourceMeta;
+    error?: string;
+  }> {
+    try {
+      const cookies = await extractCookies();
+      if (!cookies) return { success: false, error: '未登录' };
+
       const stored = await chrome.storage.local.get([
-        STORAGE_KEYS.VIDEO_META,
-        STORAGE_KEYS.VIDEOS,
+        STORAGE_KEYS.SOURCE_META,
+        STORAGE_KEYS.SOURCE_VIDEOS,
       ]);
-      const meta: VideoMeta | undefined = stored[STORAGE_KEYS.VIDEO_META];
-      const existingVideos: Video[] = stored[STORAGE_KEYS.VIDEOS] || [];
+      const meta: SourceMeta | undefined = stored[STORAGE_KEYS.SOURCE_META];
+      const existingVideos: Video[] = stored[STORAGE_KEYS.SOURCE_VIDEOS] || [];
 
       if (!meta || !meta.hasMore) {
         return { success: false, error: '没有更多视频' };
       }
 
-      console.log('[BiliSorter] Loading more videos from page', meta.nextPage);
+      console.log('[BiliSorter] Loading more from page', meta.nextPage);
 
       const result = await fetchVideos(
-        meta.sourceFolderId,
+        meta.folderId,
         cookies,
-        undefined, // no progress callback for load more
+        undefined,
         meta.nextPage,
-        3 // 3 more pages
+        SOURCE.PAGES_PER_LOAD
       );
 
       const allVideos = [...existingVideos, ...result.videos];
-      const updatedMeta: VideoMeta = {
-        sourceFolderId: meta.sourceFolderId,
+      const updatedMeta: SourceMeta = {
+        folderId: meta.folderId,
+        total: result.total || meta.total,
         nextPage: result.nextPage,
         hasMore: result.hasMore,
-        total: result.total || meta.total,
+        lastFetchTime: Date.now(),
       };
 
-      // Save to storage
       await chrome.storage.local.set({
-        [STORAGE_KEYS.VIDEOS]: allVideos,
-        [STORAGE_KEYS.VIDEO_META]: updatedMeta,
+        [STORAGE_KEYS.SOURCE_VIDEOS]: allVideos,
+        [STORAGE_KEYS.SOURCE_META]: updatedMeta,
       });
 
-      console.log('[BiliSorter] Loaded', result.videos.length, 'more videos, total:', allVideos.length);
+      console.log('[BiliSorter] Loaded', result.videos.length, 'more, total:', allVideos.length);
 
-      return {
-        success: true,
-        videos: allVideos,
-        hasMore: result.hasMore,
-        totalVideoCount: updatedMeta.total,
-      };
+      return { success: true, videos: allVideos, sourceMeta: updatedMeta };
     } catch (error) {
       console.error('[BiliSorter] Load more failed:', error);
       return {
@@ -364,12 +432,26 @@ export default defineBackground(() => {
     }
   }
 
-  async function handleGetSuggestions(
-    port: chrome.runtime.Port,
-    videos: Video[],
-    folders: Folder[]
-  ): Promise<void> {
-    console.log('[BiliSorter] Starting suggestion generation');
+  // ─── Force Reindex: Clear ALL pools ───
+
+  async function handleForceReindex(): Promise<{ success: boolean }> {
+    console.log('[BiliSorter] Force reindex — clearing all caches');
+    await chrome.storage.local.remove([
+      STORAGE_KEYS.FOLDERS,
+      STORAGE_KEYS.FOLDER_SAMPLES,
+      STORAGE_KEYS.FOLDER_INDEX_TIME,
+      STORAGE_KEYS.FOLDER_CHECKPOINT,
+      STORAGE_KEYS.SOURCE_VIDEOS,
+      STORAGE_KEYS.SOURCE_META,
+      STORAGE_KEYS.SUGGESTIONS,
+    ]);
+    return { success: true };
+  }
+
+  // ─── Pool 3: AI Suggestions ───
+
+  async function handleGetSuggestions(port: chrome.runtime.Port): Promise<void> {
+    console.log('[BiliSorter] Starting suggestion generation (Pool 3)');
 
     if (suggestStatus.inProgress) {
       safePostMessage(port, { type: 'ERROR', error: '建议生成已在进行中' });
@@ -379,22 +461,38 @@ export default defineBackground(() => {
     suggestStatus = { inProgress: true, progress: '正在准备AI分析...' };
 
     try {
-      // Get settings
-      const result = await chrome.storage.local.get(STORAGE_KEYS.SETTINGS);
-      const settings = result[STORAGE_KEYS.SETTINGS];
+      // Read all data from storage (background reads directly, no data from popup)
+      const stored = await chrome.storage.local.get([
+        STORAGE_KEYS.SETTINGS,
+        STORAGE_KEYS.SOURCE_VIDEOS,
+        STORAGE_KEYS.SOURCE_META,
+        STORAGE_KEYS.FOLDERS,
+        STORAGE_KEYS.SUGGESTIONS,
+      ]);
 
+      const settings = stored[STORAGE_KEYS.SETTINGS];
       if (!settings?.apiKey) {
         suggestStatus = { inProgress: false, error: '未配置 API Key' };
-        safePostMessage(port, { type: 'ERROR', error: '未配置 API Key' });
+        safePostMessage(port, { type: 'ERROR', error: '请先在 ⚙️ 设置中配置 Claude API Key' });
         return;
       }
 
-      // Find source folder from videos
-      const sourceFolderId = folders[0]?.id;
+      const sourceVideos: Video[] = stored[STORAGE_KEYS.SOURCE_VIDEOS] || [];
+      const folders: Folder[] = stored[STORAGE_KEYS.FOLDERS] || [];
+      const sourceMeta: SourceMeta | undefined = stored[STORAGE_KEYS.SOURCE_META];
+      const existingSuggestions: Record<string, Suggestion[]> = stored[STORAGE_KEYS.SUGGESTIONS] || {};
 
-      // Generate suggestions
+      if (sourceVideos.length === 0) {
+        suggestStatus = { inProgress: false, error: '没有源视频' };
+        safePostMessage(port, { type: 'ERROR', error: '请先加载源视频' });
+        return;
+      }
+
+      const sourceFolderId = sourceMeta?.folderId || settings.sourceFolderId || folders[0]?.id;
+
+      // Generate suggestions (incremental: skip videos that already have suggestions)
       const suggestions = await generateSuggestions(
-        videos,
+        sourceVideos,
         folders,
         sourceFolderId,
         settings.apiKey,
@@ -406,31 +504,28 @@ export default defineBackground(() => {
             completed,
             total,
           });
-        }
+        },
+        existingSuggestions
       );
 
-      // Save to storage regardless of port status
+      // Save to storage
       await chrome.storage.local.set({
-        [STORAGE_KEYS.SUGGESTIONS]: suggestions,
+        [STORAGE_KEYS.SUGGESTIONS]: suggestions.results,
       });
 
       suggestStatus = { inProgress: false };
-
-      // Complete
       safePostMessage(port, {
         type: 'SUGGESTIONS_COMPLETE',
-        suggestions,
+        suggestions: suggestions.results,
+        failedCount: suggestions.failedCount,
       });
 
-      console.log('[BiliSorter] Suggestion generation complete');
+      console.log('[BiliSorter] Suggestion generation complete, failed:', suggestions.failedCount);
     } catch (error) {
       console.error('[BiliSorter] Suggestion generation failed:', error);
       const errorMsg = error instanceof Error ? error.message : '未知错误';
       suggestStatus = { inProgress: false, error: errorMsg };
-      safePostMessage(port, {
-        type: 'ERROR',
-        error: errorMsg,
-      });
+      safePostMessage(port, { type: 'ERROR', error: errorMsg });
     }
   }
 });

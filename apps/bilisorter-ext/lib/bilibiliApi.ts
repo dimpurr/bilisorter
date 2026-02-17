@@ -18,6 +18,17 @@ interface BiliCookies {
 }
 
 /**
+ * Custom error for 412 rate limiting.
+ * Distinguished from other errors so callers can save checkpoint and pause.
+ */
+export class RateLimitError extends Error {
+  constructor(url: string) {
+    super(`Rate limited (HTTP 412) — ${url}`);
+    this.name = 'RateLimitError';
+  }
+}
+
+/**
  * Extract required cookies from bilibili.com
  */
 export async function extractCookies(): Promise<BiliCookies | null> {
@@ -78,6 +89,11 @@ export function buildFetchHeaders(cookies: BiliCookies): Record<string, string> 
  */
 async function safeParseBiliJson<T>(response: Response, context: string): Promise<T> {
   const contentType = response.headers.get('content-type') || '';
+
+  // Detect 412 rate limiting specifically
+  if (response.status === 412) {
+    throw new RateLimitError(response.url);
+  }
 
   if (!response.ok) {
     const bodyPreview = await response.text().catch(() => '(unreadable)');
@@ -195,6 +211,10 @@ export async function fetchFolderSample(
     // Extract up to 10 titles
     return data.data.medias.slice(0, 10).map((m) => m.title);
   } catch (error) {
+    // Re-throw RateLimitError so callers can save checkpoint and pause
+    if (error instanceof RateLimitError) {
+      throw error;
+    }
     console.error('[BiliAPI] Error fetching folder sample:', error);
     return [];
   }
@@ -246,12 +266,19 @@ export async function fetchVideos(
         data = await safeParseBiliJson<BiliVideoListResponse>(response, 'fetchVideos');
         break; // success
       } catch (error) {
-        if (attempt === 0) {
-          console.warn('[BiliAPI] fetchVideos page', page, 'failed, retrying in', RETRY_DELAY, 'ms');
-          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
+        // On RateLimitError: retry once, then re-throw so caller can save checkpoint
+        if (error instanceof RateLimitError) {
+          if (attempt === 0) {
+            console.warn('[BiliAPI] fetchVideos page', page, 'rate limited, retrying in', RETRY_DELAY, 'ms');
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
+          } else {
+            // Re-throw so caller can save checkpoint with partial results
+            console.error('[BiliAPI] fetchVideos page', page, 'rate limited after retry');
+            throw error;
+          }
         } else {
-          // Second attempt also failed — return what we have so far
-          console.error('[BiliAPI] fetchVideos page', page, 'failed after retry, returning partial results');
+          // Non-rate-limit error — return what we have
+          console.error('[BiliAPI] fetchVideos page', page, 'error:', error);
           return { videos, total, hasMore: true, nextPage: page };
         }
       }

@@ -218,6 +218,154 @@ body {
   color: #606060;
 }
 
+.status-paused {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #f59e0b;
+}
+
+.pause-icon {
+  font-size: 14px;
+}
+
+.pause-reason {
+  color: #f59e0b;
+}
+
+.checkpoint-status {
+  color: #f59e0b;
+  font-size: 11px;
+}
+
+/* Small button (e.g. force reindex trash icon) */
+.btn-small {
+  padding: 4px 8px;
+  font-size: 12px;
+  min-width: unset;
+}
+
+/* Header Actions (log + settings buttons) */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  font-size: 18px;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  transition: background 0.2s;
+  position: relative;
+}
+
+.icon-btn:hover {
+  background: #2a2b2d;
+}
+
+.icon-btn.has-dot::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 8px;
+  height: 8px;
+  background: #ef4444;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+
+/* ─── Zone Layout: Folder Index + Source ─── */
+
+.folder-index-section {
+  border-bottom: 1px solid #333333;
+  background: #1a1b1d;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: #b0b0b0;
+}
+
+.section-header.clickable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.section-header.clickable:hover {
+  background: #1f2022;
+}
+
+.section-toggle {
+  font-size: 10px;
+  color: #808080;
+  width: 12px;
+}
+
+.section-title {
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.section-badge {
+  color: #808080;
+  font-size: 12px;
+}
+
+.section-time {
+  color: #606060;
+  font-size: 11px;
+  margin-left: auto;
+}
+
+.section-body {
+  padding: 4px 16px 10px;
+}
+
+.section-actions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 16px;
+  flex-wrap: wrap;
+}
+
+.source-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.source-section .section-header {
+  border-bottom: 1px solid #2a2b2d;
+}
+
+.source-section .source-selector {
+  margin-left: auto;
+}
+
+.source-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: #808080;
+  border-bottom: 1px solid #2a2b2d;
+}
+
+.suggest-progress {
+  padding: 6px 16px;
+  border-bottom: 1px solid #2a2b2d;
+}
+
 /* Empty State Component */
 .empty-state-container {
   flex: 1;
@@ -259,6 +407,11 @@ body {
   padding: 8px 12px;
   border-radius: 6px;
   margin-bottom: 16px;
+}
+
+.empty-state .btn {
+  display: block;
+  margin: 0 auto;
 }
 
 /* Scrollable Content Area */
