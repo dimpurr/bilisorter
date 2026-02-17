@@ -192,7 +192,7 @@
 |---|---|---|
 | 1 | **认证与登录检测** | Background SW 用 `chrome.cookies.get` 读 SESSDATA + bili_jct + DedeUserID。调 `/x/web-interface/nav` 验证有效性。无效则 popup 显示"请先登录 bilibili.com" |
 | 2 | **索引收藏夹列表** | 按钮 "📥 索引收藏夹"。加载用户所有收藏夹 + 选定源收藏夹（默认"默认收藏夹"）的全部视频。带进度反馈。结果缓存到 chrome.storage.local |
-| 3 | **视频列表展示** | 每条：缩略图 + 标题 + UP主 + 分区 tag。失效视频标记 [已失效] 灰显 |
+| 3 | **视频列表展示** | 每条：缩略图 + 标题 + UP主 + 播放量 + 收藏时间。失效视频标记 [已失效] 灰显 |
 | 4 | **AI 批量建议** | 按钮 "✨ 生成建议"。把视频分批(5-10)发给 Claude，返回推荐收藏夹+置信度。每条视频下面显示 AI badge(s) |
 | 5 | **一键移动 + 5s 撤销 Toast** | 点击 AI badge → 5s toast "已移动到 [收藏夹名称] — 撤销"。5s 内点撤销则取消移动。5s 后执行 API 调用。**不需要永久 undo** |
 | 6 | **导出 JSON** | 按钮 "📤 导出 JSON"。把当前索引的视频列表（含 AI 建议）导出为 JSON 文件下载 |
@@ -234,7 +234,7 @@ bilisorter/
 │       ├── package.json
 │       └── tsconfig.json
 ├── docs/
-│   └── research.md
+│   └── research-log-n-suggestion.md
 └── README.md
 ```
 
