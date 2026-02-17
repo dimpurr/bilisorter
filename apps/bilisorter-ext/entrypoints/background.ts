@@ -158,10 +158,18 @@ export default defineBackground(() => {
       const folders = await fetchFolders(uid, cookies);
       console.log('[BiliSorter] Fetched', folders.length, 'folders');
 
-      // Sample titles from each folder (with 300ms delay to avoid rate limiting)
+      // Sample titles from each folder with adaptive rate limiting
+      const SAMPLE_BASE_DELAY = 500;       // 500ms between requests
+      const SAMPLE_BATCH_SIZE = 15;        // pause every 15 folders
+      const SAMPLE_BATCH_COOLDOWN = 2000;  // 2s cooldown between batches
+      const SAMPLE_RETRY_DELAY = 3000;     // 3s wait before retry on 412
+
       for (let i = 0; i < folders.length; i++) {
         const folder = folders[i];
         if (folder.media_count > 0) {
+          let sampled = false;
+
+          // First attempt
           try {
             const sampleTitles = await fetchFolderSample(
               folder.id,
@@ -169,22 +177,43 @@ export default defineBackground(() => {
               cookies
             );
             folder.sampleTitles = sampleTitles;
+            sampled = true;
           } catch (error) {
-            console.warn('[BiliSorter] Failed to sample folder', folder.id, error);
-            folder.sampleTitles = [];
+            console.warn('[BiliSorter] Sample attempt 1 failed for folder', folder.id, error);
+          }
+
+          // Retry once after 3s if first attempt failed (likely 412)
+          if (!sampled) {
+            console.log('[BiliSorter] Retrying folder', folder.id, 'after', SAMPLE_RETRY_DELAY, 'ms');
+            await new Promise((resolve) => setTimeout(resolve, SAMPLE_RETRY_DELAY));
+            try {
+              const sampleTitles = await fetchFolderSample(
+                folder.id,
+                folder.media_count,
+                cookies
+              );
+              folder.sampleTitles = sampleTitles;
+            } catch (error) {
+              console.warn('[BiliSorter] Sample attempt 2 failed for folder', folder.id, '— skipping');
+              folder.sampleTitles = [];
+            }
           }
         }
 
         // Send progress update (safe — won't crash if popup closed)
-        indexStatus.progress = `已获取 ${i + 1}/${folders.length} 个收藏夹`;
+        indexStatus.progress = `采样收藏夹 ${i + 1}/${folders.length}...`;
         safePostMessage(port, {
           type: 'FOLDERS_READY',
           folders: folders.slice(0, i + 1),
         });
 
-        // 300ms delay between folder samples to avoid rate limiting
+        // Rate limiting: 500ms base delay + 2s cooldown every 15 folders
         if (i < folders.length - 1) {
-          await new Promise((resolve) => setTimeout(resolve, 300));
+          const isBatchBoundary = (i + 1) % SAMPLE_BATCH_SIZE === 0;
+          const delay = isBatchBoundary
+            ? SAMPLE_BASE_DELAY + SAMPLE_BATCH_COOLDOWN
+            : SAMPLE_BASE_DELAY;
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
 
