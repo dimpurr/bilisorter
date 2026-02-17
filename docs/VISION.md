@@ -1,6 +1,8 @@
 # BiliSorter - Vision
 
 > AI-powered Chrome extension to organize your Bilibili favorites — sort hundreds of unsorted videos in minutes, not hours.
+>
+> **BiliSorter — AI 收藏夹整理 & 视频助手**
 
 ---
 
@@ -8,7 +10,9 @@
 
 B站用户平均收藏 200-500 个视频，绝大多数堆在"默认收藏夹"里再也找不到。现有工具要么是基于关键词的机械匹配，要么是要求用户逐条手动分类。BiliSorter 用 AI 理解视频内容（标题、分区、UP主、标签），为每个视频推荐最佳收藏夹，一键移动。
 
-它不是一个收藏管理器，不是视频下载器——它是一个一次性的整理工具，用完即走。
+BiliSorter 从纯粹的收藏夹排序工具演进为三层产品架构：**Sort 作为核心护城河（蓝海独占）**，视频 AI 助手作为增值功能（利用用户已配置的 API Key，边际成本为零），Reedle 导入桥接作为引流触点。这三层各有清晰定位，Sort 始终是主角。
+
+它的核心身份仍然是一个一次性整理工具，用完即走——但通过 Layer 2 的视频页 AI 助手，它也可以成为用户每天可见的伴侣工具。
 
 ---
 
@@ -40,11 +44,15 @@ Primary market: 个人用户（中文互联网 B 站用户）。不面向 UP 主
 
 6. **容错 > 效率** — 5 秒撤销 toast 优先于批量一键操作。误操作的成本远大于多点几下的成本。
 
+7. **Sort 为王** — Summary/视频助手永远是附加功能（addon），永远不是主打卖点。如果 Summary 的开发速度影响了 Sort 核心体验的迭代，砍 Summary。BiliSorter 的护城河是收藏夹 AI 管理（蓝海），不是视频总结（红海）。不要因为能做 Summary 就改名，也不要因为怕品牌模糊就不做 Summary。做 Summary，但让 Sort 继续当主角。
+
 ---
 
 ## Product Shape
 
-### What BiliSorter is
+### What BiliSorter is — Three-Layer Architecture
+
+**Layer 1: Core 护城河 — 收藏夹 AI 管理** (v0.2 已完成)
 - 一个 Chrome 扩展（Manifest V3），Popup + Side Panel 为交互界面
 - 读取用户的 B 站收藏夹，展示视频列表
 - 调用 LLM（Claude / Gemini）为每个视频生成收藏夹分类建议
@@ -52,11 +60,85 @@ Primary market: 个人用户（中文互联网 B 站用户）。不面向 UP 主
 - AI 收藏夹顾问：多轮对话分析收藏现状，提供合并/拆分/重命名建议
 - 收藏夹管理：拖拽排序、批量重命名、排序按钮
 
+**Layer 2: Bonus 增值 — 视频 AI 助手** (v5 planned)
+- 视频页 AI 总结：content script 注入视频旁的总结面板
+- 视频页 AI 对话：轻量 Q&A，调用 Reedle Python Server 的 Bilibili transcript API
+- 视频悬浮菜单增强：在点赞/收藏/投币旁加 AI 按钮
+- 收藏时快速分类：在原生收藏弹窗中显示 AI 建议的文件夹
+
+**Layer 3: Bridge 桥接 — Reedle / iopho 引流** (v5 planned)
+- "导入 Reedle 深度阅读" 按钮（视频页悬浮菜单 + Popup 视频卡片）
+- 视频页 → "在 Reedle 中对话" 跳转，引导深度阅读
+- iopho 账号登录 → 赠送 AI Token → 免配置 API Key
+
 ### What BiliSorter is not
+- **不是独立的视频总结工具** — 视频 AI 助手只是附赠功能（"good enough"），不在红海里争主战场。质量不必超过专做总结的竞品。
 - **不是收藏管理器** — 支持收藏夹排序和重命名，但不做创建/删除。v1 计划加入从 Popup 内创建收藏夹的能力。
-- **不是视频播放器或下载器** — 不涉及视频内容本身
 - **不是推荐系统** — 不推荐新视频，只整理已收藏的
 - **不是数据分析工具** — AI 顾问提供收藏夹结构分析，但不做深度统计/趋势分析
+
+---
+
+## Strategic Positioning & Branding Decision
+
+### Why the name stays "BiliSorter"
+
+经过对 8 种命名方案的穷举分析和辩论（BiliSorter / BiliSort / BiliFold / Bilidy / BiliTidy / Bili AI / Reedle for Bilibili / Favly 等），最终决策：**保持 BiliSorter，副标题扩展为 "AI 收藏夹整理 & 视频助手"**。
+
+核心理由：
+1. **名字即说明书** — 用户在 Chrome Web Store 看到名字 3 秒内决定是否点击。"BiliSorter" 三秒内传达完整价值主张。
+2. **品牌迁移成本 > 优化收益** — 已有工作产品、文档、代码仓库，改名的实际收益远小于成本。
+3. **副标题解决扩展性** — 副标题可随版本更新迭代，品牌名不行。
+4. **"Sorter" 的语义限制是理论问题** — Notion 的意思是 "概念"，但没人在意它做的远超 "记概念"。产品力够强时，名字会被重新定义。
+
+### 否决方案记录
+
+| 否决方案 | 否决原因 |
+|----------|----------|
+| **Bili AI** | 品牌模糊，进入红海竞争（"又一个 B 站 AI 插件？"），说不清具体价值 |
+| **Reedle for Bilibili** | 母品牌力不足以撑子品牌，架构差异大 |
+| **三产品独立** (BiliSorter + Bili Summary + Reedle Extension) | 资源浪费，用户不会装三个插件 |
+| **合并进 Reedle Extension** | 产品形态完全不同（保存网页 vs 排序收藏夹），强行合并互相干扰 |
+| **BiliFold** | billfold（钱包）混淆，双关对中文用户不直觉 |
+| **去掉 Bili 前缀** (Favly, Curio, Sieve 等) | 失去 SEO 锚点，冷启动期致命 |
+
+### 竞争定位
+
+| Scope | 市场性质 | BiliSorter 的策略 |
+|-------|---------|-------------------|
+| 收藏夹 AI 管理 | 🔵 蓝海（几乎无竞品） | **全力投入，核心护城河** |
+| 视频总结/对话 | 🔴 红海（BibiGPT 等数十竞品） | 附赠功能，"good enough" 即可，不争主战场 |
+| Reader 导入 | 🟡 Niche（Reedle 独特） | 桥接引流，不独立做 |
+
+---
+
+## Ecosystem & Commercialization
+
+### iopho 账号体系
+
+- BiliSorter 作为 iopho 产品线之一
+- 用户自带 API Key → 免费使用（核心体验不受限）
+- 登录 iopho 账号 → 赠送 AI Token 额度 → 零配置启动
+- Advanced users 用自己的 key，casual users 用 iopho token
+- 商业模式：iopho token 额度用尽后可购买或接入更多功能
+
+### Reedle 关系
+
+- **BiliSorter 与 Reedle Extension 保持独立** — 两个不同的 Chrome 扩展，不合并
+- **BiliSorter 是 Reedle 的下游消费者** — 调用 Reedle Python Server 的 Bilibili transcript API，不重建爬虫
+- **引流触点**：视频页 "导入 Reedle" 按钮 → 打开 Reedle Web 的 import flow
+- **iopho 打通**：两者通过 iopho 账号体系共享 token 额度（未来）
+
+### API Key 飞轮效应
+
+```
+用户为收藏夹排序配置 API Key
+  → Summary 功能零成本启用（已有 key）
+  → 每天使用 Summary
+  → 更高留存（从 "用完即走" 变 "每天可见"）
+  → 更多 Reedle 引流机会
+  → iopho 生态增长
+```
 
 ---
 
@@ -78,4 +160,4 @@ For **discussion** (detailed tech/feature debates): see `initial-discussion-log.
 
 ---
 
-*2026-02*
+*2026-02 | Updated 2026-02-17: v5 three-layer architecture, branding decision, ecosystem strategy*

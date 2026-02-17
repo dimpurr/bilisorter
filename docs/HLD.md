@@ -11,7 +11,8 @@
 | **v0.1** | Initial MVP: single monolithic INDEX operation coupling folder sampling and full video fetch |
 | **v0.2** (current) | Three-pool architecture: separated folder indexing, paginated source video queue (60/page), incremental AI suggestions. Fixed Claude pipeline (1s batch delay, error reporting, incremental mode). New two-zone layout. Multi-provider (Claude + Gemini). Folder manager (drag-sort, inline rename, sort buttons). Side Panel UI. AI Advisor Chat. declarativeNetRequest for header rewriting. |
 | **v1** (planned) | Batch apply all, create folder from popup, duplicate detection |
-| **Future** | Streaming AI chat, execute-from-chat, AI tool-use, content script integration |
+| **v5** (planned) | Three-layer product architecture. Layer 2: content script for video page AI summary/chat, floating menu enhancement, smart bookmark-time classification. Layer 3: Reedle import bridge, iopho account + token integration. New permissions: activeTab, scripting, content_scripts. |
+| **Future** | Streaming AI chat, execute-from-chat, AI tool-use, multi-provider expansion, cross-folder analytics |
 
 ---
 
@@ -580,13 +581,144 @@ After indexing, scan all folders for videos that appear in multiple folders. Dis
 
 ---
 
+## v5 Changes (planned)
+
+> **Strategic context**: BiliSorter evolves from a pure sorting tool into a three-layer product. Sort remains the core moat (blue ocean). Summary is a bonus feature leveraging the user's already-configured API Key (zero marginal cost). Reedle bridge provides import funnel. See `VISION.md` §Strategic Positioning for full branding rationale.
+
+### Three-Layer Product Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│              BiliSorter Chrome Extension              │
+│                                                       │
+│  ═══ Layer 1: Core 护城河 (收藏夹 AI 管理) ════════  │
+│  • AI 收藏夹分类建议 + 一键移动 (已完成 v0.2)        │
+│  • 收藏夹 AI 顾问多轮对话 (已完成 v0.2)              │
+│  • 收藏夹管理：拖拽排序 / 重命名 (已完成 v0.2)       │
+│  • 批量应用 / 创建收藏夹 / 重复检测 (v1 planned)     │
+│                                                       │
+│  ═══ Layer 2: Bonus 增值 (视频 AI 助手) ════════════  │
+│  • 视频页 AI 总结 (content script 注入)               │
+│  • 视频页 AI 对话 (轻量 Q&A)                          │
+│  • 视频悬浮菜单增强 (AI 按钮)                         │
+│  • 收藏时快速分类 (收藏弹窗 AI 建议)                  │
+│                                                       │
+│  ═══ Layer 3: Bridge 桥接 (Reedle / iopho 引流) ════  │
+│  • "导入 Reedle 深度阅读" 按钮                        │
+│  • iopho 登录 → 赠送 Token → 免配置 API Key           │
+│                                                       │
+│  ═══ Data Flow ════════════════════════════════════   │
+│  Reedle Python Server (已有 Bilibili transcript API)  │
+│       ↓ (视频字幕/元数据)                              │
+│  Content Script (视频页注入 summary/chat)              │
+│  Popup/SidePanel (收藏夹管理主界面)                    │
+└─────────────────────────────────────────────────────┘
+```
+
+### Layer 2: Content Script — Video Page AI Summary
+
+**Architecture change**: v5 introduces a content script (`content.ts`) injected on `*://*.bilibili.com/video/*` pages. This breaks the v0.2 "No Content Script" principle — justified because Summary requires DOM injection on the video page. The core sorting flows (popup/sidepanel) remain unchanged.
+
+**Functionality**:
+- Injects an AI summary panel adjacent to the video player (below or beside, depending on viewport)
+- Fetches video transcript via Reedle Python Server's existing `/api/bilibili/transcript` endpoint
+- Calls the same AI provider (Claude/Gemini) configured in extension Settings
+- Summary is generated on-demand (user clicks), not auto-triggered on page load
+- Displays as a collapsible card with markdown rendering
+
+**Quality bar**: "Good enough" — not competing with dedicated summary tools. No fancy features like chapter navigation, keyword extraction, or multi-language. Just a clean summary + source transcript.
+
+### Layer 2: Content Script — Video Page AI Chat
+
+- Quick Q&A about video content, injected below the summary panel
+- Single input + response format (not full multi-turn chat — that's what Reedle is for)
+- Shares API Key and provider config with core sort feature
+- Prompts can reference the video transcript + summary as context
+
+### Layer 2: Floating Menu Enhancement
+
+- Injects a small icon button next to B站's native action buttons (点赞/投币/收藏/分享)
+- Click → opens summary panel, or triggers quick classification if user has folders indexed
+- Requires `content_scripts` manifest entry matching `*://*.bilibili.com/video/*`
+
+### Layer 2: Smart Bookmark-Time Classification
+
+- When user clicks B站's native 收藏 (bookmark) button, BiliSorter observes the DOM mutation of the bookmark modal
+- If folder index exists (Pool 1 cached), displays AI-suggested folder as a highlighted option within the native bookmark dialog
+- Requires: (1) content script running on video page, (2) MutationObserver on bookmark modal, (3) cached folder data accessible from content script via `chrome.storage.local`
+- Graceful degradation: if no folder index exists, the native bookmark UI is unmodified
+
+### Layer 3: Reedle Import Bridge
+
+- "导入 Reedle 深度阅读" button appears in:
+  - Video page floating menu (content script injection)
+  - Popup/SidePanel video cards (alongside existing AI badges)
+- Clicking opens Reedle Web (`reedle.io/import?url={bilibili_video_url}`) in a new tab
+- Prompt text: "想深入了解这个视频？在 Reedle 中导入并对话"
+- No Reedle account required for import — import is free, AI chat is gated by iopho token
+
+### Layer 3: iopho Account & Token Integration
+
+**Login flow**:
+- Settings panel: new "登录 iopho" button alongside existing manual API Key input
+- OAuth flow → iopho backend → returns JWT + token allocation
+- Token stored in `chrome.storage.local` (`bilisorter_iopho_token`)
+
+**Token usage**:
+- When iopho token is present AND no manual API Key configured: all AI calls route through iopho proxy
+- iopho backend proxies to Claude/Gemini with its own API keys
+- Token metering: each AI call deducts from user's iopho allocation
+- When allocation exhausted: toast "Token 额度已用完，请充值或配置自己的 API Key"
+
+**Coexistence with manual API Key**:
+- If user has both iopho token AND manual API Key: manual key takes priority (power user preference)
+- If user has only manual API Key: works exactly as today (no behavioral change)
+- If user has only iopho token: routes through iopho proxy
+- If neither: existing "请配置 API Key" flow
+
+### v5 New Permissions
+
+| Permission | Why (new in v5) |
+|------------|-----------------|
+| `activeTab` | Content script injection on bilibili.com video pages |
+| `scripting` | Programmatic script injection for floating menu |
+| `content_scripts` match: `*://*.bilibili.com/video/*` | Summary/chat/floating menu on video pages |
+
+| Host Permission (new in v5) | Why |
+|-----------------------------|-----|
+| `https://api.iopho.com/*` | iopho token auth + AI proxy |
+| `https://reedle-server.example.com/*` | Bilibili transcript API (Reedle Python Server) |
+
+### v5 Data Flow: Reedle Server Integration
+
+```
+Content Script (video page)
+  → GET /api/bilibili/transcript?bvid={bvid}
+  → Reedle Python Server (FastAPI)
+    → youtube-transcript-api pattern for Bilibili
+    → Returns: {segments: [{start, duration, text}], full_text}
+  → Content Script: feeds transcript to AI provider for summary/chat
+```
+
+- **No new backend needed** — BiliSorter calls Reedle's existing API
+- **Auth**: iopho token (if logged in) or anonymous with rate limiting
+- **Fallback**: if Reedle server is unavailable, summary/chat gracefully degrades with toast error
+
+### v5 Persistence Schema (additions)
+
+| Key | Type | Lifetime | Purpose |
+|-----|------|----------|---------|
+| `bilisorter_iopho_token` | `{jwt, expiresAt, allocation}` | Persistent, refreshable | iopho account session |
+| `bilisorter_summary_cache` | `{[bvid]: {summary, timestamp}}` | Cached, LRU eviction | Per-video summary cache |
+
+---
+
 ## Future Ideas (no commitments)
 
 - **Streaming AI chat**: Replace request-response chat with streaming responses (SSE/ReadableStream) for real-time feel
 - **Execute suggestion from chat**: AI proposes rename/merge → one-click apply buttons rendered inline in chat
 - **Tool-use / function-calling**: AI can directly call rename/merge/sort APIs via tool use protocol
 - **Multi-provider expansion**: Deepseek, OpenAI-compatible, Ollama (local) providers
-- **Content Script augmentation**: Inject subtle indicators on B站's own favorites page
 - **Smart folder creation**: When AI finds no matching folder for a cluster of videos, suggest creating a new folder
 - **Cross-folder analytics**: Deep statistical analysis of collection patterns over time
 - **Raindrop.io bridge**: Export B站 favorites as bookmarks importable to Raindrop.io
@@ -594,4 +726,4 @@ After indexing, scan all folders for videos that appear in multiple folders. Dis
 
 ---
 
-*Derived from initial-discussion-log.md and research-log-n-suggestion.md | 2026-02*
+*Derived from initial-discussion-log.md and research-log-n-suggestion.md | 2026-02 | v5 strategy added 2026-02-17*
