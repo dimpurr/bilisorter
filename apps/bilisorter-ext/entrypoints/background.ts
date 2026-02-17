@@ -23,6 +23,34 @@ export default defineBackground(() => {
   // Track active ports for cleanup
   const activePorts = new Map<string, chrome.runtime.Port>();
 
+  // Track in-progress operations so popup can recover state on reopen
+  let indexStatus: {
+    inProgress: boolean;
+    progress?: string;
+    error?: string;
+  } = { inProgress: false };
+
+  let suggestStatus: {
+    inProgress: boolean;
+    progress?: string;
+    error?: string;
+  } = { inProgress: false };
+
+  /**
+   * Safely post a message to a port, catching errors if port is disconnected.
+   * Returns false if the port is disconnected.
+   */
+  function safePostMessage(port: chrome.runtime.Port, message: PortMessage): boolean {
+    try {
+      port.postMessage(message);
+      return true;
+    } catch (e) {
+      // Port disconnected — popup was closed. Continue operation silently.
+      console.log('[BiliSorter] Port disconnected, continuing operation in background');
+      return false;
+    }
+  }
+
   // Handle one-shot messages
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === 'CHECK_AUTH') {
@@ -30,6 +58,16 @@ export default defineBackground(() => {
         console.error('[BiliSorter] CHECK_AUTH error:', error);
         sendResponse({ loggedIn: false });
       });
+      return true;
+    }
+
+    if (message.type === 'GET_INDEX_STATUS') {
+      sendResponse({ ...indexStatus });
+      return true;
+    }
+
+    if (message.type === 'GET_SUGGEST_STATUS') {
+      sendResponse({ ...suggestStatus });
       return true;
     }
 
@@ -88,18 +126,28 @@ export default defineBackground(() => {
   async function handleIndex(port: chrome.runtime.Port): Promise<void> {
     console.log('[BiliSorter] Starting index operation');
 
+    // Prevent duplicate index operations
+    if (indexStatus.inProgress) {
+      safePostMessage(port, { type: 'ERROR', error: '索引操作已在进行中' });
+      return;
+    }
+
+    indexStatus = { inProgress: true, progress: '正在连接...' };
+
     try {
       // Extract cookies
       const cookies = await extractCookies();
       if (!cookies) {
-        port.postMessage({ type: 'ERROR', error: '未登录' });
+        indexStatus = { inProgress: false, error: '未登录' };
+        safePostMessage(port, { type: 'ERROR', error: '未登录' });
         return;
       }
 
       // Check auth to get UID
       const authResult = await checkAuth(cookies);
       if (!authResult.loggedIn || !authResult.uid) {
-        port.postMessage({ type: 'ERROR', error: '登录已过期' });
+        indexStatus = { inProgress: false, error: '登录已过期' };
+        safePostMessage(port, { type: 'ERROR', error: '登录已过期' });
         return;
       }
 
@@ -110,7 +158,7 @@ export default defineBackground(() => {
       const folders = await fetchFolders(uid, cookies);
       console.log('[BiliSorter] Fetched', folders.length, 'folders');
 
-      // Sample titles from each folder
+      // Sample titles from each folder (with 300ms delay to avoid rate limiting)
       for (let i = 0; i < folders.length; i++) {
         const folder = folders[i];
         if (folder.media_count > 0) {
@@ -127,15 +175,23 @@ export default defineBackground(() => {
           }
         }
 
-        // Send progress update
-        port.postMessage({
+        // Send progress update (safe — won't crash if popup closed)
+        indexStatus.progress = `已获取 ${i + 1}/${folders.length} 个收藏夹`;
+        safePostMessage(port, {
           type: 'FOLDERS_READY',
           folders: folders.slice(0, i + 1),
         });
 
-        // Small delay to prevent overwhelming the port
-        await new Promise((resolve) => setTimeout(resolve, 10));
+        // 300ms delay between folder samples to avoid rate limiting
+        if (i < folders.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
       }
+
+      // Save folders to storage immediately (in case popup is closed)
+      await chrome.storage.local.set({
+        [STORAGE_KEYS.FOLDERS]: folders,
+      });
 
       // Determine source folder
       const settings = await chrome.storage.local.get(STORAGE_KEYS.SETTINGS);
@@ -143,16 +199,17 @@ export default defineBackground(() => {
         settings[STORAGE_KEYS.SETTINGS]?.sourceFolderId || folders[0]?.id;
 
       if (!sourceFolderId) {
-        port.postMessage({ type: 'ERROR', error: '没有找到收藏夹' });
+        indexStatus = { inProgress: false, error: '没有找到收藏夹' };
+        safePostMessage(port, { type: 'ERROR', error: '没有找到收藏夹' });
         return;
       }
 
       // Fetch videos from source folder
       console.log('[BiliSorter] Fetching videos from folder:', sourceFolderId);
-      let loaded = 0;
+      indexStatus.progress = '正在获取视频...';
       const videos = await fetchVideos(sourceFolderId, cookies, (count, total) => {
-        loaded = count;
-        port.postMessage({
+        indexStatus.progress = `正在获取视频... ${count}/${total}`;
+        safePostMessage(port, {
           type: 'FETCH_PROGRESS',
           loaded: count,
           total,
@@ -161,28 +218,30 @@ export default defineBackground(() => {
 
       console.log('[BiliSorter] Fetched', videos.length, 'videos');
 
-      // Complete
+      // Complete — save results to storage regardless of port status
       const timestamp = Date.now();
-      port.postMessage({
-        type: 'INDEX_COMPLETE',
-        videos,
-        sourceFolderId,
-        timestamp,
-      });
-
-      // Save to storage
       await chrome.storage.local.set({
         [STORAGE_KEYS.FOLDERS]: folders,
         [STORAGE_KEYS.VIDEOS]: videos,
         bilisorter_lastIndexed: timestamp,
       });
 
+      indexStatus = { inProgress: false };
+      safePostMessage(port, {
+        type: 'INDEX_COMPLETE',
+        videos,
+        sourceFolderId,
+        timestamp,
+      });
+
       console.log('[BiliSorter] Index operation complete');
     } catch (error) {
       console.error('[BiliSorter] Index operation failed:', error);
-      port.postMessage({
+      const errorMsg = error instanceof Error ? error.message : '未知错误';
+      indexStatus = { inProgress: false, error: errorMsg };
+      safePostMessage(port, {
         type: 'ERROR',
-        error: error instanceof Error ? error.message : '未知错误',
+        error: errorMsg,
       });
     }
   }
@@ -194,13 +253,21 @@ export default defineBackground(() => {
   ): Promise<void> {
     console.log('[BiliSorter] Starting suggestion generation');
 
+    if (suggestStatus.inProgress) {
+      safePostMessage(port, { type: 'ERROR', error: '建议生成已在进行中' });
+      return;
+    }
+
+    suggestStatus = { inProgress: true, progress: '正在准备AI分析...' };
+
     try {
       // Get settings
       const result = await chrome.storage.local.get(STORAGE_KEYS.SETTINGS);
       const settings = result[STORAGE_KEYS.SETTINGS];
 
       if (!settings?.apiKey) {
-        port.postMessage({ type: 'ERROR', error: '未配置 API Key' });
+        suggestStatus = { inProgress: false, error: '未配置 API Key' };
+        safePostMessage(port, { type: 'ERROR', error: '未配置 API Key' });
         return;
       }
 
@@ -215,7 +282,8 @@ export default defineBackground(() => {
         settings.apiKey,
         settings.model || 'claude-3-5-haiku-latest',
         (completed, total) => {
-          port.postMessage({
+          suggestStatus.progress = `正在分析视频... ${completed}/${total}`;
+          safePostMessage(port, {
             type: 'SUGGESTION_PROGRESS',
             completed,
             total,
@@ -223,13 +291,15 @@ export default defineBackground(() => {
         }
       );
 
-      // Save to storage
+      // Save to storage regardless of port status
       await chrome.storage.local.set({
         [STORAGE_KEYS.SUGGESTIONS]: suggestions,
       });
 
+      suggestStatus = { inProgress: false };
+
       // Complete
-      port.postMessage({
+      safePostMessage(port, {
         type: 'SUGGESTIONS_COMPLETE',
         suggestions,
       });
@@ -237,9 +307,11 @@ export default defineBackground(() => {
       console.log('[BiliSorter] Suggestion generation complete');
     } catch (error) {
       console.error('[BiliSorter] Suggestion generation failed:', error);
-      port.postMessage({
+      const errorMsg = error instanceof Error ? error.message : '未知错误';
+      suggestStatus = { inProgress: false, error: errorMsg };
+      safePostMessage(port, {
         type: 'ERROR',
-        error: error instanceof Error ? error.message : '未知错误',
+        error: errorMsg,
       });
     }
   }

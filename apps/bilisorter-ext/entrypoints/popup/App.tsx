@@ -121,6 +121,70 @@ const App: React.FC = () => {
     checkAuth();
   }, []);
 
+  // Check if background has an in-progress operation (popup was closed and reopened)
+  useEffect(() => {
+    const checkBackgroundStatus = async () => {
+      try {
+        const indexRes = await chrome.runtime.sendMessage({ type: 'GET_INDEX_STATUS' });
+        if (indexRes?.inProgress) {
+          setIsIndexing(true);
+          setProgressText(indexRes.progress || '索引进行中...');
+        }
+
+        const suggestRes = await chrome.runtime.sendMessage({ type: 'GET_SUGGEST_STATUS' });
+        if (suggestRes?.inProgress) {
+          setIsGeneratingSuggestions(true);
+          setProgressText(suggestRes.progress || 'AI分析进行中...');
+        }
+      } catch (error) {
+        console.error('[App] Error checking background status:', error);
+      }
+    };
+
+    checkBackgroundStatus();
+  }, []);
+
+  // Listen for storage changes to detect when background completes an operation
+  useEffect(() => {
+    const listener = (changes: { [key: string]: chrome.storage.StorageChange }, area: string) => {
+      if (area !== 'local') return;
+
+      // If videos were updated while we're in indexing state, reload data
+      if (changes[STORAGE_KEYS.VIDEOS] && isIndexing) {
+        const newVideos = changes[STORAGE_KEYS.VIDEOS].newValue;
+        if (newVideos) {
+          setVideos(newVideos);
+          setIsIndexing(false);
+          setProgressText(undefined);
+        }
+      }
+
+      if (changes[STORAGE_KEYS.FOLDERS]) {
+        const newFolders = changes[STORAGE_KEYS.FOLDERS].newValue;
+        if (newFolders) {
+          setFolders(newFolders);
+        }
+      }
+
+      if (changes.bilisorter_lastIndexed) {
+        setLastIndexed(changes.bilisorter_lastIndexed.newValue);
+      }
+
+      // If suggestions were updated while generating
+      if (changes[STORAGE_KEYS.SUGGESTIONS] && isGeneratingSuggestions) {
+        const newSuggestions = changes[STORAGE_KEYS.SUGGESTIONS].newValue;
+        if (newSuggestions) {
+          setSuggestions(newSuggestions);
+          setIsGeneratingSuggestions(false);
+          setProgressText(undefined);
+        }
+      }
+    };
+
+    chrome.storage.onChanged.addListener(listener);
+    return () => chrome.storage.onChanged.removeListener(listener);
+  }, [isIndexing, isGeneratingSuggestions]);
+
   // Save settings when changed
   const handleSettingsChange = useCallback(async (newSettings: Settings) => {
     setSettings(newSettings);
@@ -170,10 +234,9 @@ const App: React.FC = () => {
     });
 
     port.onDisconnect.addListener(() => {
-      if (isIndexing) {
-        setIsIndexing(false);
-        setProgressText(undefined);
-      }
+      // Don't reset state — background may still be working.
+      // The storage.onChanged listener will handle completion.
+      console.log('[App] Index port disconnected');
     });
 
     port.postMessage({ type: 'INDEX' });
@@ -211,10 +274,8 @@ const App: React.FC = () => {
     });
 
     port.onDisconnect.addListener(() => {
-      if (isGeneratingSuggestions) {
-        setIsGeneratingSuggestions(false);
-        setProgressText(undefined);
-      }
+      // Don't reset state — background may still be working.
+      console.log('[App] Suggestions port disconnected');
     });
 
     // Send GET_SUGGESTIONS message with videos and folders

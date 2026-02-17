@@ -90,6 +90,10 @@ B站 does not offer a public OAuth flow. Authentication relies on the user's exi
 
 **Cookie attachment to API requests**: Background service worker manually sets the `Cookie` header on all `fetch()` calls to B站 API: `fetch(url, {headers: {'Cookie': \`SESSDATA=${sessdata}; bili_jct=${bili_jct}\`}})`. This works in MV3 because `host_permissions` for `*://*.bilibili.com/*` grants the extension permission to set the `Cookie` header. Cookies are NOT auto-attached — they must be read via `chrome.cookies.get` first and then manually injected.
 
+**Anti-hotlinking headers**: All B站 API requests MUST include `Referer: https://www.bilibili.com` and `Origin: https://www.bilibili.com` headers. Without these, certain endpoints (especially `/x/v3/fav/resource/list`) return HTML error pages instead of JSON. A `buildFetchHeaders(cookies)` helper centralizes Cookie + Referer + Origin + User-Agent for all API calls.
+
+**Rate limiting mitigation**: Folder sampling uses a 300ms inter-request delay to avoid triggering B站's anti-abuse measures. All API response parsing goes through `safeParseBiliJson()` which validates HTTP status and content-type before JSON parsing, providing clear diagnostic errors.
+
 **`DedeUserID` resilience**: If the `DedeUserID` cookie is missing but SESSDATA and bili_jct are present, the user ID is extracted from the `/x/web-interface/nav` response (`data.mid`) as fallback. Auth only fails if SESSDATA is missing or expired.
 
 **Comparison with RainSorter/reedle-extension**: No backend proxy, no token refresh, no session sync. Simpler because B站 cookies are long-lived (~30 days) and managed by the browser, not by us.
@@ -122,7 +126,7 @@ No `sidePanel`, `activeTab`, `scripting`, or `webNavigation` needed.
 
 **Long-running operations** (FETCH_FOLDERS+VIDEOS, GET_SUGGESTIONS): Popup opens a `chrome.runtime.Port` connection to the background SW. Background sends progress updates via `port.postMessage()`. Port closes when the operation completes. This pattern is correct for MV3 because: (1) background can push multiple progress messages, (2) background detects popup closure via `port.onDisconnect`, and (3) no broadcast pollution.
 
-**Popup close during operations**: If the popup closes while a Port-based operation is in progress, the background service worker detects the disconnection via `port.onDisconnect` and **aborts** the operation immediately. Partial results are NOT cached. The user must re-trigger the operation on next popup open. For 5s undo timers: since the timer runs in popup local state, closing the popup cancels all pending timers — no API calls are made, and videos remain in the cache (safe default). Future versions may allow background to continue operations independently.
+**Popup close during operations**: If the popup closes while a Port-based operation is in progress, the background service worker **continues** the operation to completion. All `port.postMessage()` calls are wrapped in a `safePostMessage()` helper that catches disconnected-port errors silently. Results are always saved to `chrome.storage.local` regardless of popup state. When the popup reopens, it: (1) sends `GET_INDEX_STATUS` / `GET_SUGGEST_STATUS` one-shot messages to check if an operation is still running, and if so, shows progress UI; (2) listens to `chrome.storage.onChanged` to detect when the background finishes and updates state automatically; (3) loads any cached data from storage immediately (cache-first). For 5s undo timers: since the timer runs in popup local state, closing the popup cancels all pending timers — no API calls are made, and videos remain in the cache (safe default).
 
 ### 1. Popup Open → Auth Check + Cache Restore
 

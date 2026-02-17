@@ -59,9 +59,18 @@ export interface Settings {
 // One-shot messages via sendMessage
 export type OneShotMessage =
   | { type: 'CHECK_AUTH' }
+  | { type: 'GET_INDEX_STATUS' }
+  | { type: 'GET_SUGGEST_STATUS' }
   | { type: 'MOVE_VIDEO'; srcFolderId: number; dstFolderId: number; resourceId: string; resourceType: number }
   | { type: 'INDEX' }
   | { type: 'GET_SUGGESTIONS'; videos: Video[]; folders: Folder[] };
+
+// Operation status response (for GET_INDEX_STATUS / GET_SUGGEST_STATUS)
+export interface OperationStatus {
+  inProgress: boolean;
+  progress?: string;
+  error?: string;
+}
 
 // Port-based messages for long-running operations
 export type PortMessage =

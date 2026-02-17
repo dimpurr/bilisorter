@@ -59,6 +59,44 @@ export function buildCookieHeader(cookies: BiliCookies): string {
 }
 
 /**
+ * Build common fetch headers for Bilibili API requests.
+ * Includes Cookie, Referer, and User-Agent to avoid anti-hotlinking HTML responses.
+ */
+export function buildFetchHeaders(cookies: BiliCookies): Record<string, string> {
+  return {
+    Cookie: buildCookieHeader(cookies),
+    Referer: 'https://www.bilibili.com',
+    Origin: 'https://www.bilibili.com',
+    'User-Agent':
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  };
+}
+
+/**
+ * Safely parse a Bilibili API JSON response.
+ * Throws a descriptive error if the response is not valid JSON (e.g. HTML anti-crawler page).
+ */
+async function safeParseBiliJson<T>(response: Response, context: string): Promise<T> {
+  const contentType = response.headers.get('content-type') || '';
+
+  if (!response.ok) {
+    const bodyPreview = await response.text().catch(() => '(unreadable)');
+    throw new Error(
+      `[${context}] HTTP ${response.status} from ${response.url} — ${bodyPreview.slice(0, 200)}`
+    );
+  }
+
+  if (!contentType.includes('json')) {
+    const bodyPreview = await response.text().catch(() => '(unreadable)');
+    throw new Error(
+      `[${context}] Expected JSON but got ${contentType} from ${response.url} — ${bodyPreview.slice(0, 200)}`
+    );
+  }
+
+  return response.json() as Promise<T>;
+}
+
+/**
  * Check authentication status
  */
 export async function checkAuth(cookies: BiliCookies): Promise<{
@@ -67,14 +105,10 @@ export async function checkAuth(cookies: BiliCookies): Promise<{
   username?: string;
 }> {
   try {
-    const cookieHeader = buildCookieHeader(cookies);
-    const response = await fetch(`${BILIBILI_API_BASE}${BILI_API.NAV}`, {
-      headers: {
-        Cookie: cookieHeader,
-      },
-    });
+    const headers = buildFetchHeaders(cookies);
+    const response = await fetch(`${BILIBILI_API_BASE}${BILI_API.NAV}`, { headers });
 
-    const data: BiliNavResponse = await response.json();
+    const data = await safeParseBiliJson<BiliNavResponse>(response, 'checkAuth');
 
     if (data.code !== 0 || !data.data) {
       console.log('[BiliAPI] Nav API error:', data);
@@ -103,17 +137,13 @@ export async function fetchFolders(
   cookies: BiliCookies
 ): Promise<Folder[]> {
   try {
-    const cookieHeader = buildCookieHeader(cookies);
+    const headers = buildFetchHeaders(cookies);
     const response = await fetch(
       `${BILIBILI_API_BASE}${BILI_API.FOLDER_LIST}?up_mid=${uid}`,
-      {
-        headers: {
-          Cookie: cookieHeader,
-        },
-      }
+      { headers }
     );
 
-    const data: BiliFolderListResponse = await response.json();
+    const data = await safeParseBiliJson<BiliFolderListResponse>(response, 'fetchFolders');
 
     if (data.code !== 0 || !data.data) {
       throw new Error(`Failed to fetch folders: ${data.code}`);
@@ -145,7 +175,7 @@ export async function fetchFolderSample(
   }
 
   try {
-    const cookieHeader = buildCookieHeader(cookies);
+    const headers = buildFetchHeaders(cookies);
 
     // Calculate random page
     const totalPages = Math.ceil(mediaCount / 20);
@@ -153,14 +183,10 @@ export async function fetchFolderSample(
 
     const response = await fetch(
       `${BILIBILI_API_BASE}${BILI_API.VIDEO_LIST}?media_id=${folderId}&pn=${randomPage}&ps=20`,
-      {
-        headers: {
-          Cookie: cookieHeader,
-        },
-      }
+      { headers }
     );
 
-    const data: BiliVideoListResponse = await response.json();
+    const data = await safeParseBiliJson<BiliVideoListResponse>(response, 'fetchFolderSample');
 
     if (data.code !== 0 || !data.data || !data.data.medias) {
       return [];
@@ -187,20 +213,16 @@ export async function fetchVideos(
   let hasMore = true;
   let total = 0;
 
-  const cookieHeader = buildCookieHeader(cookies);
+  const headers = buildFetchHeaders(cookies);
 
   while (hasMore) {
     try {
       const response = await fetch(
         `${BILIBILI_API_BASE}${BILI_API.VIDEO_LIST}?media_id=${folderId}&pn=${page}&ps=20`,
-        {
-          headers: {
-            Cookie: cookieHeader,
-          },
-        }
+        { headers }
       );
 
-      const data: BiliVideoListResponse = await response.json();
+      const data = await safeParseBiliJson<BiliVideoListResponse>(response, 'fetchVideos');
 
       if (data.code !== 0 || !data.data) {
         throw new Error(`Failed to fetch videos: ${data.code}`);
@@ -251,7 +273,7 @@ export async function moveVideo(
   cookies: BiliCookies
 ): Promise<{ success: boolean; error?: string; code?: number }> {
   try {
-    const cookieHeader = buildCookieHeader(cookies);
+    const headers = buildFetchHeaders(cookies);
 
     const formData = new URLSearchParams();
     formData.append('media_id', srcFolderId.toString());
@@ -264,14 +286,14 @@ export async function moveVideo(
       {
         method: 'POST',
         headers: {
-          Cookie: cookieHeader,
+          ...headers,
           'Content-Type': 'application/x-www-form-urlencoded',
         },
         body: formData.toString(),
       }
     );
 
-    const data: BiliMoveResponse = await response.json();
+    const data = await safeParseBiliJson<BiliMoveResponse>(response, 'moveVideo');
 
     // Handle specific error codes
     if (data.code === 72010002) {
