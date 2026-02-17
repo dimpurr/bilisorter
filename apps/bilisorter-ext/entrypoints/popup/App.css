@@ -965,19 +965,9 @@ body {
   border-color: #00a1d6;
 }
 
-.folder-chip.default-folder-chip {
-  opacity: 0.6;
-  cursor: default;
-  border-style: dashed;
-}
-
-.folder-chip.default-folder-chip:hover {
-  border-color: #444;
-}
-
-.folder-chip.default-folder-chip .chip-drag-handle.disabled {
-  cursor: default;
-  opacity: 0.5;
+.chip-handle-spacer {
+  width: 18px;
+  flex-shrink: 0;
 }
 
 .folder-chip.dragging {
@@ -1059,8 +1049,34 @@ body {
   border-top: 1px solid #333333;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   align-items: center;
+}
+
+.folder-manager-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.folder-sort-btn {
+  background: #2a2b2d;
+  border: 1px solid #444;
+  border-radius: 6px;
+  color: #cccccc;
+  font-size: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.folder-sort-btn:hover:not(:disabled) {
+  border-color: #00a1d6;
+  background: #333;
+}
+
+.folder-sort-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .folder-manager-status {

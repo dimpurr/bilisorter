@@ -309,6 +309,34 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
     setEditValue('');
   }, []);
 
+  // ─── One-click sort helpers ───
+
+  const applySort = useCallback((sorted: Folder[]) => {
+    const fullList = defaultFolder ? [defaultFolder, ...sorted] : sorted;
+    setLocalFolders(fullList);
+    setStatusMessage('正在保存排序...');
+    try {
+      onFoldersReorder(fullList);
+      setStatusMessage('✅ 排序已保存');
+    } catch {
+      setStatusMessage('❌ 排序保存失败');
+    }
+  }, [defaultFolder, onFoldersReorder]);
+
+  const handleSortByName = useCallback(() => {
+    const sorted = [...sortableFolders].sort((a, b) =>
+      a.name.localeCompare(b.name, 'zh-CN')
+    );
+    applySort(sorted);
+  }, [sortableFolders, applySort]);
+
+  const handleSortByCount = useCallback(() => {
+    const sorted = [...sortableFolders].sort((a, b) =>
+      b.media_count - a.media_count
+    );
+    applySort(sorted);
+  }, [sortableFolders, applySort]);
+
   if (!isOpen) return null;
 
   return (
@@ -335,20 +363,7 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
             </div>
           ) : (
             <>
-              {/* Default folder — pinned, not draggable */}
-              {defaultFolder && (
-                <div className="folder-chip-grid">
-                  <div className="folder-chip default-folder-chip">
-                    <span className="chip-drag-handle disabled" title="默认收藏夹无法排序">📌</span>
-                    <span className="chip-name" title={defaultFolder.name}>
-                      {defaultFolder.name}
-                    </span>
-                    <span className="chip-count">{defaultFolder.media_count}</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Sortable folders */}
+              {/* Sortable folders (default folder rendered inline but not draggable) */}
               <DndContext
                 sensors={sensors}
                 collisionDetection={closestCenter}
@@ -360,6 +375,16 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
                   strategy={rectSortingStrategy}
                 >
                   <div className="folder-chip-grid">
+                    {/* Default folder — same style, just no drag handle */}
+                    {defaultFolder && (
+                      <div className="folder-chip">
+                        <span className="chip-handle-spacer" />
+                        <span className="chip-name" title={defaultFolder.name}>
+                          {defaultFolder.name}
+                        </span>
+                        <span className="chip-count">{defaultFolder.media_count}</span>
+                      </div>
+                    )}
                     {sortableFolders.map((folder) => (
                       <SortableChip
                         key={folder.id}
@@ -387,6 +412,24 @@ const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
         </div>
 
         <div className="folder-manager-footer">
+          <div className="folder-manager-actions">
+            <button
+              className="folder-sort-btn"
+              onClick={handleSortByName}
+              disabled={isLoading || sortableFolders.length === 0}
+              title="按名称 A→Z 排序"
+            >
+              🔤 按名称排序
+            </button>
+            <button
+              className="folder-sort-btn"
+              onClick={handleSortByCount}
+              disabled={isLoading || sortableFolders.length === 0}
+              title="按视频数量降序排序"
+            >
+              📊 按数量排序
+            </button>
+          </div>
           {statusMessage && (
             <span className="folder-manager-status">{statusMessage}</span>
           )}
