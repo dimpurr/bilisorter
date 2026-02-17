@@ -69,7 +69,7 @@ BiliSorter 源自 RainSorter（github.com/dimpurr/rainsorter），一个为 Rain
 This document defines **why** BiliSorter exists and its direction.
 
 For **what** (architecture, data flow, features): see `HLD.md`
-For **research** (API surface, competitive analysis, technical decisions): see `research.md`
+For **research backlog** (API surface, competitive analysis, initial explorations): see `research-log-n-suggestion.md`
 For **discussion** (detailed tech/feature debates): see `discussion.md`
 
 ---

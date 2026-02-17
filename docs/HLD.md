@@ -88,6 +88,8 @@ B站 does not offer a public OAuth flow. Authentication relies on the user's exi
 
 **Cookie extraction**: `chrome.cookies.get({url: 'https://www.bilibili.com', name: 'SESSDATA'})` — requires `cookies` permission and `host_permissions` for `*://*.bilibili.com/*`.
 
+**Cookie attachment to API requests**: Background service worker manually sets the `Cookie` header on all `fetch()` calls to B站 API: `fetch(url, {headers: {'Cookie': \`SESSDATA=${sessdata}; bili_jct=${bili_jct}\`}})`. This works in MV3 because `host_permissions` for `*://*.bilibili.com/*` grants the extension permission to set the `Cookie` header. Cookies are NOT auto-attached — they must be read via `chrome.cookies.get` first and then manually injected.
+
 **Comparison with RainSorter/reedle-extension**: No backend proxy, no token refresh, no session sync. Simpler because B站 cookies are long-lived (~30 days) and managed by the browser, not by us.
 
 ---
@@ -110,18 +112,23 @@ No `sidePanel`, `activeTab`, `scripting`, or `webNavigation` needed.
 
 ## Key Flows
 
-### 1. Popup Open → Auth Check
+### 1. Popup Open → Auth Check + Cache Restore
 
 ```
 Popup mounts
+→ Read chrome.storage.local for cached data (folders, videos, suggestions)
+  → If cache exists: display immediately with "Last indexed: {timestamp}" label
+  → If no cache: show empty state with "📥 索引收藏夹" button
 → sendMessage({type: 'CHECK_AUTH'})
 → Background: chrome.cookies.get SESSDATA, bili_jct, DedeUserID
   → If any missing: respond {loggedIn: false}
   → If present: GET /x/web-interface/nav with SESSDATA
     → data.isLogin === true: respond {loggedIn: true, uid, username}
     → data.isLogin === false: respond {loggedIn: false} (cookie expired)
-→ Popup: loggedIn ? show main UI : show "请先登录 bilibili.com"
+→ Popup: loggedIn ? show main UI (with cached data if available) : show "请先登录 bilibili.com"
 ```
+
+**Cache-first strategy**: On popup open, cached data is displayed immediately (no loading spinner). A 🔄 "Refresh" button and "Last indexed: {timestamp}" label are shown alongside the cached data. User can re-index at any time. This follows the "用完即走" principle — popup opens instantly with last state.
 
 ### 2. Index Favorites (Fetch Folders + Videos)
 
@@ -129,18 +136,19 @@ Popup mounts
 User clicks "📥 索引收藏夹"
 → sendMessage({type: 'FETCH_FOLDERS'})
 → Background: GET /x/v3/fav/folder/created/list-all?up_mid={uid}
-→ Background: for each folder, GET /x/v3/fav/resource/list (ps=10, pn=1)
-  → Extract titles of up to 10 videos as sample
+→ Background: for each folder, GET /x/v3/fav/resource/list (ps=20, pn=random_page)
+  → Pick a random page number (1 to ceil(media_count/20))
+  → Extract titles of up to 10 videos as random sample
   → Store as folder.sampleTitles: string[]
 → Popup: display folder dropdown (default: 默认收藏夹)
 
 → sendMessage({type: 'FETCH_VIDEOS', folderId})
 → Background: paginate GET /x/v3/fav/resource/list (ps=20, loop until !has_more)
   → Progress: sendMessage back per page ({type: 'FETCH_PROGRESS', loaded, total})
-→ Popup: display video list + cache to chrome.storage.local
+→ Popup: display video list + cache to chrome.storage.local (with timestamp)
 ```
 
-**Folder sampling rationale**: When fetching the folder list, we also fetch the first page (10 items) of each folder. This gives the LLM concrete examples of what each folder contains, dramatically improving classification accuracy. Modern LLM context windows (Haiku: 200K tokens) can easily accommodate this — even 20 folders × 10 titles ≈ ~2K tokens of extra context. The extra API calls are acceptable because folder count is typically 5-30.
+**Folder sampling rationale**: When fetching the folder list, we also fetch **one random page** (10 items) from each folder. Random sampling (not just first page) provides a more representative cross-section of folder contents. This gives the LLM concrete examples of what each folder contains, dramatically improving classification accuracy. Modern LLM context windows (Haiku: 200K tokens) can easily accommodate this — even 20 folders × 10 titles ≈ ~2K tokens of extra context. The extra API calls are acceptable because folder count is typically 5-30. Random page is selected by: `Math.ceil(Math.random() * Math.ceil(media_count / 20))`, capped at 1 if folder has <20 items.
 
 **Video list item data shape** (from API response):
 
@@ -161,25 +169,31 @@ User clicks "📥 索引收藏夹"
 ```
 User clicks "✨ 生成建议"
 → sendMessage({type: 'GET_SUGGESTIONS', videos, folders})
-→ Background: batch videos into groups of 5-10
+→ Background service worker (NOT popup) handles all Claude API calls:
+  → Batch videos into groups of 5-10
   → For each batch:
-    → Construct prompt: folder list + video metadata (title, tname, tags, upper, intro)
-    → POST to Claude API (Haiku by default)
-    → Parse response: [{videoId, folderId, folderName, confidence}]
+    → Construct prompt: folder list (with samples) + video metadata
+    → POST to Claude API (Haiku by default) — API key read from chrome.storage.local
+    → Parse response: [{videoId, suggestions: [{folderId, folderName, confidence}]}]
     → sendMessage back ({type: 'SUGGESTION_PROGRESS', completed, total})
   → Inter-batch delay: 300ms
 → Popup: display AI badges under each video card
-  → Each badge: "[收藏夹名称] 87%" — clickable to move
+  → Each badge: "[收藏夹名称]" with confidence progress bar — clickable to move
 ```
 
-**Prompt strategy**: Each batch includes the full folder list as context — for each folder: id, name, item count, and **10 sampled video titles** (fetched during indexing). This gives the LLM concrete examples of folder contents for much better classification. Plus metadata for 5-10 videos to classify. The LLM returns a JSON array of suggestions with confidence scores (0-1). Videos that don't match any folder get an empty suggestions array.
+**All AI calls happen in Background SW**: The API key is stored and read only in the background service worker. Popup sends video/folder data via `sendMessage`, background makes the Claude API call, and returns results. This centralizes secret handling.
+
+**Prompt strategy**: Each batch includes the full folder list as context — for each folder: id, name, item count, and **10 randomly sampled video titles** (fetched during indexing). This gives the LLM concrete examples of folder contents for much better classification. Plus metadata for 5-10 videos to classify.
+
+**Always 5 suggestions**: The LLM is instructed to return **exactly 5** folder suggestions per video, ranked by confidence (0.0-1.0). Even low-confidence suggestions are returned — the UI uses visual weight to distinguish. Videos that truly match nothing still get 5 suggestions, but with low scores (<30%). This prevents the "no suggestion" dead-end and always gives users actionable options.
 
 **Key signal fields** for classification:
-- `tname` (分区名) — strongest signal, often maps directly to folder names
-- `title` — content description
-- `tags` — topic keywords
-- `upper.name` — UP主 (creators often specialize)
+- `title` — content description (strongest; modern LLMs infer category reliably from title alone)
+- `tags` — topic keywords (from fav/resource/list, may be sparse)
+- `upper.name` — UP主 (creators often specialize in specific topics)
 - `intro` — video description (truncated to 100 chars)
+
+**Note on `tname` (分区名)**: The B站 `fav/resource/list` API does NOT return `tname`. Fetching it requires an extra API call per video (`/x/web-interface/view`), which would cost 100+ calls for 100 videos. v0.1 omits tname — the combination of title, tags, upper, and folder sample titles provides sufficient classification signal. If classification quality is insufficient post-launch, lazy tname fetching can be added in a later version.
 
 **Cost estimate**: ~100 videos = ~10 batch calls = ~50K tokens input + ~5K output ≈ $0.01 with Haiku.
 
@@ -187,8 +201,8 @@ User clicks "✨ 生成建议"
 
 ```
 User clicks an AI suggestion badge on a video
-→ Popup: immediately shows toast "已移动《{title}》到 [{folder}] — 撤销"
-→ Popup: starts 5s countdown timer
+→ Popup: immediately shows toast "已移动《{video_title_truncated}》→ [{folder}] — 撤销 5s"
+→ Popup: starts 5s countdown timer (visual countdown on toast)
   → If user clicks "撤销" within 5s:
     → Cancel timer, remove toast, no API call made
     → Video stays in current position, badge remains
@@ -198,6 +212,8 @@ User clicks an AI suggestion badge on a video
     → On success: append to operation log, remove video from list
     → On failure: toast error message, video remains
 ```
+
+**Toast stacking**: Multiple toasts can be active simultaneously. Each toast is independent with its own 5s timer. Toasts stack vertically from the bottom of the popup, each showing the video title (truncated) + target folder name. No overlap — each toast is a separate row. The user can click "撤销" on any individual toast independently. Maximum visible toasts: 5 (oldest auto-dismissed if exceeded). This allows rapid-fire sorting — click 3 badges in 2 seconds, see 3 stacked toasts, undo any one of them.
 
 **No permanent undo**: After the 5s window, the move is final. The operation log records it, but there is no "undo" button in the log. Users can manually move videos back via B站's own UI if needed.
 
@@ -224,12 +240,14 @@ User clicks "📋 操作日志"
 
 **Log entry shape**: `{ timestamp, videoTitle, bvid, fromFolderName, toFolderName }`
 
+`fromFolderName` and `toFolderName` are **snapshotted at operation time** (stored as strings, not resolved dynamically). If a folder is renamed after a move, the log still shows the original name at the time of the operation.
+
 **Storage**: `chrome.storage.local` key `bilisorter_operation_log`, JSON array, append-only. No size limit management in v0 (chrome.storage.local has 10MB limit; each entry is ~200 bytes, so ~50K operations before limit).
 
 ### 7. Settings
 
 ```
-Popup settings area (inline, below main UI or in a collapsible section):
+Popup: collapsible ⚙️ Settings section (inline, toggled by gear icon in header):
 → Claude API Key: password input, saved to chrome.storage.local
 → Model: select dropdown (claude-3-5-haiku-latest / claude-sonnet-4-20250514)
   → Default: haiku
@@ -237,7 +255,7 @@ Popup settings area (inline, below main UI or in a collapsible section):
   → Default: 默认收藏夹
 ```
 
-Settings are read by background service worker on each AI request. No validation beyond "key is non-empty". Invalid keys will surface as Claude API errors in the suggestion flow.
+**Settings are inline in the popup** — no separate options page. A ⚙️ icon in the header toggles a collapsible settings panel. This keeps the extension to a single entrypoint (popup only). Settings are read by background service worker on each AI request. No validation beyond "key is non-empty". Invalid keys will surface as Claude API errors in the suggestion flow.
 
 ---
 
@@ -324,8 +342,12 @@ No IndexedDB. `chrome.storage.local` is sufficient for the data volumes involved
 - Popup max height: 600px (Chrome limit)
 - Dark theme (match B站 dark mode: `#17181A` background)
 - Video thumbnails: 60×45px inline
-- AI badges: pill-shaped, colored by confidence (green >80%, yellow 50-80%)
-- Toast: fixed to bottom of popup, auto-dismiss after 5s
+- AI badges: pill-shaped, each with a small colored confidence progress bar:
+  - ≥80% — green bar
+  - 50-79% — yellow/amber bar
+  - <50% — grey bar (de-emphasized but still visible and clickable)
+  - Always 5 badges per video, visually ranked by confidence
+- Toasts: stacked vertically from bottom of popup, max 5 visible, auto-dismiss after 5s each
 
 ---
 
@@ -361,4 +383,4 @@ After indexing, scan all folders for videos that appear in multiple folders. Dis
 
 ---
 
-*Derived from discussion.md and research.md | 2026-02*
+*Derived from discussion.md and research-log-n-suggestion.md | 2026-02*

@@ -1,15 +1,31 @@
 # bilisorter-ext
 
-Chrome Extension (Manifest V3) — the main BiliSorter application.
+Chrome Extension (Manifest V3, WXT) — the main BiliSorter application.
 
-See [root README](../../README.md) for full documentation and [docs/research.md](../../docs/research.md) for technical details.
+See [root README](../../README.md) for full documentation, [docs/VISION.md](../../docs/VISION.md) for mission/principles, and [docs/HLD.md](../../docs/HLD.md) for architecture.
 
-## Development
+## Tech Stack
 
-```bash
-pnpm install
-pnpm dev        # Dev mode with HMR
-pnpm build      # Production build → dist/
+- **WXT** — extension framework (same as reedle-extension)
+- **React 18** — popup UI
+- **vanilla CSS** — dark theme matching B站
+- **TypeScript** — throughout
+- **chrome.storage.local** — persistence (settings, cache, operation log)
+- **Claude API** — AI classification (Haiku default)
+
+## Structure
+
 ```
-
-Load the `dist/` folder as an unpacked extension at `chrome://extensions/`.
+entrypoints/
+├── background.ts      # Service Worker: cookie extraction, B站 API, Claude API
+└── popup/             # Popup UI (React)
+    ├── App.tsx         # Main component
+    ├── App.css         # Dark theme styles
+    ├── index.html
+    └── main.tsx
+lib/
+├── bilibiliApi.ts     # B站 API endpoint wrappers
+├── claudeApi.ts       # Claude API wrapper
+├── constants.ts
+└── types.ts
+```

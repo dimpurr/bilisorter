@@ -1,7 +1,9 @@
-# BiliSorter Technical Research
+# BiliSorter Technical Research (Backlog & Suggestions)
 
-> Comprehensive research covering prior art, API surface, competitive landscape, and architectural decisions.
+> Comprehensive research covering prior art, API surface, competitive landscape, and initial architectural explorations.
 > Last updated: 2026-02-17
+
+> ⚠️ **§5 "Technical Design" and §6 "Implementation Phases" are SUPERSEDED.** They were written before the tech stack debate in `discussion.md` resolved the final decisions. See **`HLD.md`** for the authoritative architecture, tech stack, and feature design. Key differences: HLD uses WXT (not CRXJS), useState (not Jotai), Popup-only (not Side Panel), chrome.storage.local (not IndexedDB), Claude-only (not multi-provider). §1-4 (RainSorter analysis, B站 API, competitive landscape, legal) remain current reference material.
 
 ---
 
