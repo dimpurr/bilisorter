@@ -25,6 +25,47 @@ import { STORAGE_KEYS, SAMPLING, SOURCE } from '../lib/constants';
 export default defineBackground(() => {
   console.log('[BiliSorter] Background service worker started (v0.2 three-pool)');
 
+  // ─── Rewrite Origin/Referer for POST requests to api.bilibili.com ───
+  // Chrome extensions can't set Origin/Referer via fetch headers (forbidden).
+  // declarativeNetRequest operates at the network level before the request leaves.
+  chrome.declarativeNetRequest.updateDynamicRules({
+    removeRuleIds: [1],
+    addRules: [
+      {
+        id: 1,
+        priority: 1,
+        action: {
+          type: chrome.declarativeNetRequest.RuleActionType.MODIFY_HEADERS,
+          requestHeaders: [
+            {
+              header: 'Origin',
+              operation: chrome.declarativeNetRequest.HeaderOperation.SET,
+              value: 'https://space.bilibili.com',
+            },
+            {
+              header: 'Referer',
+              operation: chrome.declarativeNetRequest.HeaderOperation.SET,
+              value: 'https://space.bilibili.com/',
+            },
+          ],
+        },
+        condition: {
+          urlFilter: '||api.bilibili.com/x/v3/fav/',
+          resourceTypes: [
+            chrome.declarativeNetRequest.ResourceType.XMLHTTPREQUEST,
+          ],
+          requestMethods: [
+            chrome.declarativeNetRequest.RequestMethod.POST,
+          ],
+        },
+      },
+    ],
+  }).then(() => {
+    console.log('[BiliSorter] Header rewrite rules registered');
+  }).catch((err) => {
+    console.error('[BiliSorter] Failed to register header rewrite rules:', err);
+  });
+
   // Track active ports for cleanup
   const activePorts = new Map<string, chrome.runtime.Port>();
 
