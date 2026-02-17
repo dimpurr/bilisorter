@@ -12,6 +12,7 @@ import type {
   AuthResponse,
   Folder,
   Video,
+  VideoMeta,
   BiliCookies,
   PortMessage,
 } from '../lib/types';
@@ -85,6 +86,14 @@ export default defineBackground(() => {
         })
         .then(sendResponse)
         .catch((error) => sendResponse({ success: false, error: error.message }));
+      return true;
+    }
+
+    if (message.type === 'LOAD_MORE_VIDEOS') {
+      handleLoadMore().then(sendResponse).catch((error) => {
+        console.error('[BiliSorter] LOAD_MORE_VIDEOS error:', error);
+        sendResponse({ success: false, error: error.message });
+      });
       return true;
     }
 
@@ -233,10 +242,10 @@ export default defineBackground(() => {
         return;
       }
 
-      // Fetch videos from source folder
+      // Fetch first batch of videos from source folder (max 3 pages = ~60 videos)
       console.log('[BiliSorter] Fetching videos from folder:', sourceFolderId);
       indexStatus.progress = '正在获取视频...';
-      const videos = await fetchVideos(sourceFolderId, cookies, (count, total) => {
+      const result = await fetchVideos(sourceFolderId, cookies, (count, total) => {
         indexStatus.progress = `正在获取视频... ${count}/${total}`;
         safePostMessage(port, {
           type: 'FETCH_PROGRESS',
@@ -245,13 +254,23 @@ export default defineBackground(() => {
         });
       });
 
-      console.log('[BiliSorter] Fetched', videos.length, 'videos');
+      const { videos, total: totalVideoCount, hasMore, nextPage } = result;
+      console.log('[BiliSorter] Fetched', videos.length, 'of', totalVideoCount, 'videos, hasMore:', hasMore);
+
+      // Save video pagination metadata
+      const videoMeta: VideoMeta = {
+        sourceFolderId,
+        nextPage,
+        hasMore,
+        total: totalVideoCount,
+      };
 
       // Complete — save results to storage regardless of port status
       const timestamp = Date.now();
       await chrome.storage.local.set({
         [STORAGE_KEYS.FOLDERS]: folders,
         [STORAGE_KEYS.VIDEOS]: videos,
+        [STORAGE_KEYS.VIDEO_META]: videoMeta,
         bilisorter_lastIndexed: timestamp,
       });
 
@@ -261,6 +280,8 @@ export default defineBackground(() => {
         videos,
         sourceFolderId,
         timestamp,
+        hasMore,
+        totalVideoCount,
       });
 
       console.log('[BiliSorter] Index operation complete');
@@ -272,6 +293,74 @@ export default defineBackground(() => {
         type: 'ERROR',
         error: errorMsg,
       });
+    }
+  }
+
+  /**
+   * Load more videos from the source folder (next 3 pages).
+   * Appends to existing cached videos.
+   */
+  async function handleLoadMore(): Promise<{
+    success: boolean;
+    videos?: Video[];
+    hasMore?: boolean;
+    totalVideoCount?: number;
+    error?: string;
+  }> {
+    try {
+      const cookies = await extractCookies();
+      if (!cookies) return { success: false, error: '未登录' };
+
+      // Read current video meta
+      const stored = await chrome.storage.local.get([
+        STORAGE_KEYS.VIDEO_META,
+        STORAGE_KEYS.VIDEOS,
+      ]);
+      const meta: VideoMeta | undefined = stored[STORAGE_KEYS.VIDEO_META];
+      const existingVideos: Video[] = stored[STORAGE_KEYS.VIDEOS] || [];
+
+      if (!meta || !meta.hasMore) {
+        return { success: false, error: '没有更多视频' };
+      }
+
+      console.log('[BiliSorter] Loading more videos from page', meta.nextPage);
+
+      const result = await fetchVideos(
+        meta.sourceFolderId,
+        cookies,
+        undefined, // no progress callback for load more
+        meta.nextPage,
+        3 // 3 more pages
+      );
+
+      const allVideos = [...existingVideos, ...result.videos];
+      const updatedMeta: VideoMeta = {
+        sourceFolderId: meta.sourceFolderId,
+        nextPage: result.nextPage,
+        hasMore: result.hasMore,
+        total: result.total || meta.total,
+      };
+
+      // Save to storage
+      await chrome.storage.local.set({
+        [STORAGE_KEYS.VIDEOS]: allVideos,
+        [STORAGE_KEYS.VIDEO_META]: updatedMeta,
+      });
+
+      console.log('[BiliSorter] Loaded', result.videos.length, 'more videos, total:', allVideos.length);
+
+      return {
+        success: true,
+        videos: allVideos,
+        hasMore: result.hasMore,
+        totalVideoCount: updatedMeta.total,
+      };
+    } catch (error) {
+      console.error('[BiliSorter] Load more failed:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : '未知错误',
+      };
     }
   }
 

@@ -201,66 +201,103 @@ export async function fetchFolderSample(
 }
 
 /**
- * Fetch all videos from a folder with progress callback
+ * Result of a paginated video fetch
+ */
+export interface FetchVideosResult {
+  videos: Video[];
+  total: number;
+  hasMore: boolean;
+  nextPage: number;
+}
+
+/**
+ * Fetch videos from a folder with pagination limit and rate limiting.
+ * Fetches up to `maxPages` pages (default 3 = ~60 videos).
+ * Returns partial results + pagination info for "load more".
  */
 export async function fetchVideos(
   folderId: number,
   cookies: BiliCookies,
-  onProgress?: (loaded: number, total: number) => void
-): Promise<Video[]> {
+  onProgress?: (loaded: number, total: number) => void,
+  startPage: number = 1,
+  maxPages: number = 3
+): Promise<FetchVideosResult> {
   const videos: Video[] = [];
-  let page = 1;
+  let page = startPage;
   let hasMore = true;
   let total = 0;
+  let pagesFetched = 0;
 
   const headers = buildFetchHeaders(cookies);
+  const PAGE_DELAY = 500; // 500ms between page fetches
+  const RETRY_DELAY = 3000; // 3s retry on 412
 
-  while (hasMore) {
-    try {
-      const response = await fetch(
-        `${BILIBILI_API_BASE}${BILI_API.VIDEO_LIST}?media_id=${folderId}&pn=${page}&ps=20`,
-        { headers }
-      );
+  while (hasMore && pagesFetched < maxPages) {
+    let data: BiliVideoListResponse | null = null;
 
-      const data = await safeParseBiliJson<BiliVideoListResponse>(response, 'fetchVideos');
+    // Try fetching with one retry on failure (412)
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const response = await fetch(
+          `${BILIBILI_API_BASE}${BILI_API.VIDEO_LIST}?media_id=${folderId}&pn=${page}&ps=20`,
+          { headers }
+        );
 
-      if (data.code !== 0 || !data.data) {
-        throw new Error(`Failed to fetch videos: ${data.code}`);
+        data = await safeParseBiliJson<BiliVideoListResponse>(response, 'fetchVideos');
+        break; // success
+      } catch (error) {
+        if (attempt === 0) {
+          console.warn('[BiliAPI] fetchVideos page', page, 'failed, retrying in', RETRY_DELAY, 'ms');
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY));
+        } else {
+          // Second attempt also failed — return what we have so far
+          console.error('[BiliAPI] fetchVideos page', page, 'failed after retry, returning partial results');
+          return { videos, total, hasMore: true, nextPage: page };
+        }
       }
+    }
 
-      const { medias, has_more, total: responseTotal } = data.data;
+    if (!data || data.code !== 0 || !data.data) {
+      // API returned an error code — stop and return partial
+      console.error('[BiliAPI] fetchVideos bad response code:', data?.code);
+      return { videos, total, hasMore: true, nextPage: page };
+    }
 
-      if (responseTotal !== undefined) {
-        total = responseTotal;
-      }
+    const { medias, has_more, total: responseTotal } = data.data;
 
-      // Transform and add videos
-      for (const media of medias || []) {
-        videos.push({
-          bvid: media.bvid,
-          title: media.title,
-          cover: media.cover,
-          upper: media.upper,
-          cnt_info: media.cnt_info,
-          fav_time: new Date(media.fav_time * 1000).toISOString(),
-          intro: media.intro,
-          tags: [], // Tags require additional API call
-          attr: media.attr,
-        });
-      }
+    if (responseTotal !== undefined && responseTotal > 0) {
+      total = responseTotal;
+    }
 
-      // Report progress
-      onProgress?.(videos.length, total);
+    // Transform and add videos
+    for (const media of medias || []) {
+      videos.push({
+        bvid: media.bvid,
+        title: media.title,
+        cover: media.cover,
+        upper: media.upper,
+        cnt_info: media.cnt_info,
+        fav_time: new Date(media.fav_time * 1000).toISOString(),
+        intro: media.intro,
+        tags: [],
+        attr: media.attr,
+      });
+    }
 
-      hasMore = has_more;
-      page++;
-    } catch (error) {
-      console.error('[BiliAPI] Error fetching videos:', error);
-      throw error;
+    // Report progress
+    onProgress?.(videos.length, total);
+
+    hasMore = has_more;
+    page++;
+    pagesFetched++;
+
+    // Rate limiting between pages
+    if (hasMore && pagesFetched < maxPages) {
+      await new Promise((resolve) => setTimeout(resolve, PAGE_DELAY));
     }
   }
 
-  return videos;
+  return { videos, total, hasMore, nextPage: page };
 }
 
 /**

@@ -10,6 +10,7 @@ export const STORAGE_KEYS = {
   SETTINGS: 'bilisorter_settings',
   FOLDERS: 'bilisorter_folders',
   VIDEOS: 'bilisorter_videos',
+  VIDEO_META: 'bilisorter_videoMeta',
   SUGGESTIONS: 'bilisorter_suggestions',
   OPERATION_LOG: 'bilisorter_operation_log',
 } as const;

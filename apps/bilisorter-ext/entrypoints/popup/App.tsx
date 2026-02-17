@@ -7,7 +7,7 @@ import SettingsPanel from './components/SettingsPanel';
 import VideoList from './components/VideoList';
 import ToastStack, { type Toast } from './components/ToastStack';
 import OperationLogModal from './components/OperationLogModal';
-import type { Folder, Video, Settings, Suggestion, AuthResponse, PortMessage, LogEntry } from '../../lib/types';
+import type { Folder, Video, VideoMeta, Settings, Suggestion, AuthResponse, PortMessage, LogEntry } from '../../lib/types';
 import { STORAGE_KEYS, DEFAULT_SETTINGS, UI } from '../../lib/constants';
 import './App.css';
 
@@ -32,6 +32,9 @@ const App: React.FC = () => {
   const [suggestions, setSuggestions] = useState<Record<string, Suggestion[]>>({});
   const [sourceFolderId, setSourceFolderId] = useState<number | null>(null);
   const [lastIndexed, setLastIndexed] = useState<number | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [totalVideoCount, setTotalVideoCount] = useState(0);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   // Settings state
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -71,6 +74,7 @@ const App: React.FC = () => {
         const result = await chrome.storage.local.get([
           STORAGE_KEYS.FOLDERS,
           STORAGE_KEYS.VIDEOS,
+          STORAGE_KEYS.VIDEO_META,
           STORAGE_KEYS.SUGGESTIONS,
           STORAGE_KEYS.SETTINGS,
           'bilisorter_lastIndexed',
@@ -82,6 +86,15 @@ const App: React.FC = () => {
 
         if (result[STORAGE_KEYS.VIDEOS]) {
           setVideos(result[STORAGE_KEYS.VIDEOS]);
+        }
+
+        if (result[STORAGE_KEYS.VIDEO_META]) {
+          const meta: VideoMeta = result[STORAGE_KEYS.VIDEO_META];
+          setHasMore(meta.hasMore);
+          setTotalVideoCount(meta.total);
+          if (meta.sourceFolderId) {
+            setSourceFolderId(meta.sourceFolderId);
+          }
         }
 
         if (result[STORAGE_KEYS.SUGGESTIONS]) {
@@ -159,6 +172,23 @@ const App: React.FC = () => {
         }
       }
 
+      // Update videos when load more completes
+      if (changes[STORAGE_KEYS.VIDEOS] && isLoadingMore) {
+        const newVideos = changes[STORAGE_KEYS.VIDEOS].newValue;
+        if (newVideos) {
+          setVideos(newVideos);
+        }
+      }
+
+      // Track video meta changes
+      if (changes[STORAGE_KEYS.VIDEO_META]) {
+        const newMeta: VideoMeta | undefined = changes[STORAGE_KEYS.VIDEO_META].newValue;
+        if (newMeta) {
+          setHasMore(newMeta.hasMore);
+          setTotalVideoCount(newMeta.total);
+        }
+      }
+
       if (changes[STORAGE_KEYS.FOLDERS]) {
         const newFolders = changes[STORAGE_KEYS.FOLDERS].newValue;
         if (newFolders) {
@@ -183,7 +213,7 @@ const App: React.FC = () => {
 
     chrome.storage.onChanged.addListener(listener);
     return () => chrome.storage.onChanged.removeListener(listener);
-  }, [isIndexing, isGeneratingSuggestions]);
+  }, [isIndexing, isGeneratingSuggestions, isLoadingMore]);
 
   // Save settings when changed
   const handleSettingsChange = useCallback(async (newSettings: Settings) => {
@@ -219,6 +249,8 @@ const App: React.FC = () => {
           setVideos(message.videos);
           setSourceFolderId(message.sourceFolderId);
           setLastIndexed(message.timestamp);
+          setHasMore(message.hasMore);
+          setTotalVideoCount(message.totalVideoCount);
           setIsIndexing(false);
           setProgressText(undefined);
           port.disconnect();
@@ -241,6 +273,26 @@ const App: React.FC = () => {
 
     port.postMessage({ type: 'INDEX' });
   }, [isIndexing]);
+
+  // Load more videos handler
+  const handleLoadMore = useCallback(async () => {
+    if (isLoadingMore || !hasMore) return;
+    setIsLoadingMore(true);
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'LOAD_MORE_VIDEOS' });
+      if (response?.success) {
+        setVideos(response.videos);
+        setHasMore(response.hasMore);
+        setTotalVideoCount(response.totalVideoCount);
+      } else {
+        console.error('[App] Load more failed:', response?.error);
+      }
+    } catch (error) {
+      console.error('[App] Load more error:', error);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [isLoadingMore, hasMore]);
 
   // Suggest handler
   const handleSuggest = useCallback(() => {
@@ -444,6 +496,7 @@ const App: React.FC = () => {
         <StatusBar
           progressText={isIndexing ? progressText : undefined}
           videoCount={videos.length > 0 && !isIndexing ? videos.length : undefined}
+          totalVideoCount={totalVideoCount > 0 && !isIndexing ? totalVideoCount : undefined}
           lastIndexed={!isIndexing ? lastIndexed : undefined}
           isLoading={isIndexing}
         />
@@ -459,6 +512,10 @@ const App: React.FC = () => {
           <VideoList
             videos={videos}
             suggestions={suggestions}
+            hasMore={hasMore}
+            isLoadingMore={isLoadingMore}
+            totalVideoCount={totalVideoCount}
+            onLoadMore={handleLoadMore}
           />
         )}
       </div>

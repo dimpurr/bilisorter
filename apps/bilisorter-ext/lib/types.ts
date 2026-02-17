@@ -5,6 +5,7 @@ export const STORAGE_KEYS = {
   SETTINGS: 'bilisorter_settings',
   FOLDERS: 'bilisorter_folders',
   VIDEOS: 'bilisorter_videos',
+  VIDEO_META: 'bilisorter_videoMeta',
   SUGGESTIONS: 'bilisorter_suggestions',
   OPERATION_LOG: 'bilisorter_operation_log',
 } as const;
@@ -61,6 +62,7 @@ export type OneShotMessage =
   | { type: 'CHECK_AUTH' }
   | { type: 'GET_INDEX_STATUS' }
   | { type: 'GET_SUGGEST_STATUS' }
+  | { type: 'LOAD_MORE_VIDEOS' }
   | { type: 'MOVE_VIDEO'; srcFolderId: number; dstFolderId: number; resourceId: string; resourceType: number }
   | { type: 'INDEX' }
   | { type: 'GET_SUGGESTIONS'; videos: Video[]; folders: Folder[] };
@@ -76,10 +78,18 @@ export interface OperationStatus {
 export type PortMessage =
   | { type: 'FOLDERS_READY'; folders: Folder[] }
   | { type: 'FETCH_PROGRESS'; loaded: number; total: number }
-  | { type: 'INDEX_COMPLETE'; videos: Video[]; sourceFolderId: number; timestamp: number }
+  | { type: 'INDEX_COMPLETE'; videos: Video[]; sourceFolderId: number; timestamp: number; hasMore: boolean; totalVideoCount: number }
   | { type: 'SUGGESTION_PROGRESS'; completed: number; total: number }
   | { type: 'SUGGESTIONS_COMPLETE'; suggestions: Record<string, Suggestion[]> }
   | { type: 'ERROR'; error: string };
+
+// Video pagination metadata
+export interface VideoMeta {
+  sourceFolderId: number;
+  nextPage: number;
+  hasMore: boolean;
+  total: number;
+}
 
 // Auth Response
 export interface AuthResponse {

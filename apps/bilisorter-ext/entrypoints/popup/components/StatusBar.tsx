@@ -3,6 +3,7 @@ import React from 'react';
 interface StatusBarProps {
   progressText?: string;
   videoCount?: number;
+  totalVideoCount?: number;
   lastIndexed?: number | null;
   isLoading?: boolean;
 }
@@ -10,6 +11,7 @@ interface StatusBarProps {
 const StatusBar: React.FC<StatusBarProps> = ({
   progressText,
   videoCount,
+  totalVideoCount,
   lastIndexed,
   isLoading = false,
 }) => {
@@ -38,7 +40,9 @@ const StatusBar: React.FC<StatusBarProps> = ({
       ) : (
         <div className="status-info">
           {videoCount !== undefined && (
-            <span className="video-count">{videoCount} 个视频</span>
+            <span className="video-count">
+              {videoCount} 个视频{totalVideoCount && totalVideoCount > videoCount ? ` / 共 ${totalVideoCount}` : ''}
+            </span>
           )}
           {lastIndexed && (
             <span className="last-indexed">
