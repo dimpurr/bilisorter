@@ -129,6 +129,9 @@ Popup mounts
 User clicks "📥 索引收藏夹"
 → sendMessage({type: 'FETCH_FOLDERS'})
 → Background: GET /x/v3/fav/folder/created/list-all?up_mid={uid}
+→ Background: for each folder, GET /x/v3/fav/resource/list (ps=10, pn=1)
+  → Extract titles of up to 10 videos as sample
+  → Store as folder.sampleTitles: string[]
 → Popup: display folder dropdown (default: 默认收藏夹)
 
 → sendMessage({type: 'FETCH_VIDEOS', folderId})
@@ -136,6 +139,8 @@ User clicks "📥 索引收藏夹"
   → Progress: sendMessage back per page ({type: 'FETCH_PROGRESS', loaded, total})
 → Popup: display video list + cache to chrome.storage.local
 ```
+
+**Folder sampling rationale**: When fetching the folder list, we also fetch the first page (10 items) of each folder. This gives the LLM concrete examples of what each folder contains, dramatically improving classification accuracy. Modern LLM context windows (Haiku: 200K tokens) can easily accommodate this — even 20 folders × 10 titles ≈ ~2K tokens of extra context. The extra API calls are acceptable because folder count is typically 5-30.
 
 **Video list item data shape** (from API response):
 
@@ -167,7 +172,7 @@ User clicks "✨ 生成建议"
   → Each badge: "[收藏夹名称] 87%" — clickable to move
 ```
 
-**Prompt strategy**: Each batch includes the full folder list (id + name + item count) as context, plus metadata for 5-10 videos. The LLM returns a JSON array of suggestions with confidence scores (0-1). Videos that don't match any folder get an empty suggestions array.
+**Prompt strategy**: Each batch includes the full folder list as context — for each folder: id, name, item count, and **10 sampled video titles** (fetched during indexing). This gives the LLM concrete examples of folder contents for much better classification. Plus metadata for 5-10 videos to classify. The LLM returns a JSON array of suggestions with confidence scores (0-1). Videos that don't match any folder get an empty suggestions array.
 
 **Key signal fields** for classification:
 - `tname` (分区名) — strongest signal, often maps directly to folder names
@@ -274,7 +279,7 @@ All data stored in `chrome.storage.local` under namespaced keys.
 | Key | Type | Lifetime | Purpose |
 |-----|------|----------|---------|
 | `bilisorter_settings` | `{apiKey, model, sourceFolderId}` | Permanent | User configuration |
-| `bilisorter_folders` | `Folder[]` | Cached, invalidated on re-index | Folder list from B站 |
+| `bilisorter_folders` | `Folder[]` | Cached, invalidated on re-index | Folder list from B站 (includes `sampleTitles: string[]` per folder) |
 | `bilisorter_videos` | `Video[]` | Cached, invalidated on re-index | Video list from selected folder |
 | `bilisorter_suggestions` | `{[bvid]: Suggestion[]}` | Cached, cleared on re-index | AI suggestions keyed by video bvid |
 | `bilisorter_operation_log` | `LogEntry[]` | Permanent, append-only | Move operation history |
