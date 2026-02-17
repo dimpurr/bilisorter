@@ -17,7 +17,9 @@ type EmptyStateType =
   | 'no_cache_with_key'
   | 'empty_folder'
   | 'all_invalid'
-  | 'only_one_folder';
+  | 'only_one_folder'
+  | 'ai_all_failed'
+  | 'ai_partial_failed';
 
 const App: React.FC = () => {
   // Auth state
