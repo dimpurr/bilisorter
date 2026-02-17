@@ -70,7 +70,7 @@ This document defines **why** BiliSorter exists and its direction.
 
 For **what** (architecture, data flow, features): see `HLD.md`
 For **research backlog** (API surface, competitive analysis, initial explorations): see `research-log-n-suggestion.md`
-For **discussion** (detailed tech/feature debates): see `discussion.md`
+For **discussion** (detailed tech/feature debates): see `initial-discussion-log.md`
 
 ---
 

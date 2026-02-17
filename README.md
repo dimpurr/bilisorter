@@ -53,7 +53,7 @@ bilisorter/
 └── docs/
     ├── VISION.md                 # Why — mission, principles, product shape
     ├── HLD.md                    # What — architecture, flows, UI, data model
-    ├── discussion.md             # Tech/feature debate record
+    ├── initial-discussion-log.md # Tech/feature debate record (historical)
     └── research-log-n-suggestion.md  # API reference, competitive analysis (backlog)
 ```
 
@@ -76,7 +76,7 @@ bilisorter/
 - **Cookie-based auth**: `chrome.cookies` reads existing B站 session — zero-friction, no OAuth
 - **No backend**: All API calls (B站 + Claude) happen in the background service worker
 - **useState, not Jotai**: Popup state is simple enough that React useState + chrome.storage.local suffices
-- **5 suggestions always**: LLM returns exactly 5 ranked folder suggestions per video — never a dead-end
+- **Up to 5 suggestions**: LLM returns up to 5 ranked folder suggestions per video (min of 5 and available target folders) — never a dead-end
 
 ## FAQ
 
@@ -94,6 +94,9 @@ A: Claude Haiku (default) or Sonnet. Configure your Claude API key in the extens
 
 **Q: Does Bilibili allow this?**
 A: BiliSorter performs the same actions you'd do manually (moving videos between favorites folders). It uses undocumented APIs — use at your own discretion.
+
+**Q: Is my Claude API key stored securely?**
+A: Your key is stored in `chrome.storage.local`, which is sandboxed to the extension (other extensions cannot access it). It is not encrypted on disk — this is standard practice for browser extensions. Your key is never transmitted anywhere except directly to Anthropic's API.
 
 ## Related Projects
 

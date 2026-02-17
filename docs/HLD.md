@@ -32,7 +32,7 @@
 │  │ • Claude API │  │ • JSON export     │  │
 │  │   calls      │  │                    │  │
 │  └──────┬───────┘  └────────┬───────────┘  │
-│         │   chrome.runtime.sendMessage     │
+│         │     sendMessage / Port             │
 │         └──────────────┬───────────────────┘
 │                        │                    │
 │  ┌─────────────────────┴──────────────────┐│
@@ -66,7 +66,7 @@
 
 ### No Content Script
 
-Unlike reedle-extension (which uses content.ts for session sync with its web app), BiliSorter has **no content script**. All B站 interactions happen via API calls from the background service worker using extracted cookies. This is a deliberate choice — see `discussion.md` §选型3 for the debate.
+Unlike reedle-extension (which uses content.ts for session sync with its web app), BiliSorter has **no content script**. All B站 interactions happen via API calls from the background service worker using extracted cookies. This is a deliberate choice — see `initial-discussion-log.md` §选型3 for the debate.
 
 ---
 
@@ -122,6 +122,8 @@ No `sidePanel`, `activeTab`, `scripting`, or `webNavigation` needed.
 
 **Long-running operations** (FETCH_FOLDERS+VIDEOS, GET_SUGGESTIONS): Popup opens a `chrome.runtime.Port` connection to the background SW. Background sends progress updates via `port.postMessage()`. Port closes when the operation completes. This pattern is correct for MV3 because: (1) background can push multiple progress messages, (2) background detects popup closure via `port.onDisconnect`, and (3) no broadcast pollution.
 
+**Popup close during operations**: If the popup closes while a Port-based operation is in progress, the background service worker detects the disconnection via `port.onDisconnect` and **aborts** the operation immediately. Partial results are NOT cached. The user must re-trigger the operation on next popup open. For 5s undo timers: since the timer runs in popup local state, closing the popup cancels all pending timers — no API calls are made, and videos remain in the cache (safe default). Future versions may allow background to continue operations independently.
+
 ### 1. Popup Open → Auth Check + Cache Restore
 
 ```
@@ -145,37 +147,45 @@ Popup mounts
 ```
 User clicks "📥 索引收藏夹"
 → Popup opens a Port to Background
-→ Port: {type: 'INDEX', sourceFolderId}
+→ Port: {type: 'INDEX'}
+→ Background: read bilisorter_settings.sourceFolderId from chrome.storage.local
 → Background: GET /x/v3/fav/folder/created/list-all?up_mid={uid}
 → Background: for each folder, GET /x/v3/fav/resource/list (ps=20, pn=random_page)
-  → Pick a random page number (1 to ceil(media_count/20))
+  → If media_count is 0: skip sampling (sampleTitles = [])
+  → Otherwise: pick a random page number (1 to ceil(media_count/20))
   → Extract titles of up to 10 videos as random sample
   → Store as folder.sampleTitles: string[]
 → Port: {type: 'FOLDERS_READY', folders}
-→ Popup: update folder dropdown (current: source folder from settings, default: 默认收藏夹)
-
+→ Popup: update folder dropdown
+→ Background: determine source folder:
+  → If settings.sourceFolderId exists and is in the folder list → use it
+  → Otherwise → use the first folder in the API response (默认收藏夹)
 → Background: paginate GET /x/v3/fav/resource/list for source folder (ps=20, loop until !has_more)
   → Port: {type: 'FETCH_PROGRESS', loaded, total} per page
-→ Port: {type: 'INDEX_COMPLETE', videos}
-→ Popup: display video list + cache to chrome.storage.local (with timestamp)
+→ Port: {type: 'INDEX_COMPLETE', videos, sourceFolderId}
+→ Popup: display "{N} 个视频" count + video list + cache to chrome.storage.local (with timestamp)
 → Port closes
 ```
 
-**One-click auto-fetch**: Clicking "📥 索引" triggers BOTH folder fetching (with samples) AND video fetching from the currently selected source folder. It is a single user action. If the user changes the source folder dropdown AFTER indexing, a new video fetch is triggered automatically (same Port-based flow, folders are reused from cache).
+**One-click auto-fetch**: Clicking "📥 索引" triggers BOTH folder fetching (with samples) AND video fetching from the determined source folder. It is a single user action. The background reads the previously saved source folder from settings; if none is saved, it defaults to 默认收藏夹 (first folder in the API response). If the user changes the source folder dropdown AFTER indexing, a new video fetch is triggered automatically (same Port-based flow, folders are reused from cache).
 
-**Folder sampling rationale**: When fetching the folder list, we also fetch **one random page** (10 items) from each folder. Random sampling (not just first page) provides a more representative cross-section of folder contents. This gives the LLM concrete examples of what each folder contains, dramatically improving classification accuracy. Modern LLM context windows (Haiku: 200K tokens) can easily accommodate this — even 20 folders × 10 titles ≈ ~2K tokens of extra context. The extra API calls are acceptable because folder count is typically 5-30. Random page is selected by: `Math.ceil(Math.random() * Math.ceil(media_count / 20))`, capped at 1 if folder has <20 items.
+**默认收藏夹 identification**: B站's `list-all` API always returns 默认收藏夹 as the first folder in the response. The extension uses this convention (first folder = default) rather than matching by title string.
+
+**Folder sampling rationale**: When fetching the folder list, we also fetch **one random page** (10 items) from each folder. Random sampling (not just first page) provides a more representative cross-section of folder contents. This gives the LLM concrete examples of what each folder contains, dramatically improving classification accuracy. Modern LLM context windows (Haiku: 200K tokens) can easily accommodate this — even 20 folders × 10 titles ≈ ~2K tokens of extra context. The extra API calls are acceptable because folder count is typically 5-30. Random page is selected by: `Math.ceil(Math.random() * Math.ceil(media_count / 20))`, capped at 1 if folder has <20 items. If `media_count` is 0, skip sampling entirely (`sampleTitles = []`).
 
 **Video list item data shape** (from API response):
 
-| Field | Display |
-|-------|---------|
-| `title` | Video title |
-| `cover` | Thumbnail (small) |
-| `upper.name` | UP主 |
-| `bvid` | BV number (clickable link) |
-| `cnt_info.play` | Play count |
-| `fav_time` | When favorited |
-| `attr` | Validity check: `attr !== 0` → [已失效] |
+| Field | Purpose |
+|-------|----------|
+| `title` | Video title (displayed; clickable → opens `https://www.bilibili.com/video/{bvid}` in new tab) |
+| `cover` | Thumbnail URL (displayed as 60×45px inline image) |
+| `upper.name` | UP主 (displayed) |
+| `bvid` | BV number (used for link generation, AI prompt key, and API operations; not shown as raw text) |
+| `cnt_info.play` | Play count (displayed) |
+| `fav_time` | When favorited (displayed) |
+| `intro` | Video description (AI prompt input only, not displayed in UI) |
+| `tags` | Topic keywords (AI prompt input only; may be empty for some videos) |
+| `attr` | Validity flag: `attr !== 0` → [已失效] (controls gray-out, not displayed as text) |
 
 **Invalid video handling**: Videos with `attr !== 0` (deleted/taken down) are displayed with `[已失效]` badge, grayed out. They are excluded from AI suggestion and cannot be moved.
 
@@ -201,6 +211,8 @@ User clicks "✨ 生成建议"
 ```
 
 **All AI calls happen in Background SW**: The API key is stored and read only in the background service worker. Popup sends video/folder data via Port, background makes the Claude API call, and pushes results back. This centralizes secret handling.
+
+**Re-generation**: If ✨ 建议 is clicked when suggestions already exist, all suggestions are regenerated from scratch, overwriting previous ones. No confirmation dialog — regeneration is non-destructive.
 
 #### Prompt Structure
 
@@ -270,6 +282,8 @@ User clicks an AI suggestion badge on a video
     → On failure: video re-inserts into list + error toast "移动失败，请重试"
 ```
 
+**`resourceType`**: Always `2` for video favorites. The B站 move API requires the `resources` parameter in the format `{resourceId}:{type}`, e.g., `12345:2`.
+
 **Optimistic visual removal**: When the user clicks a badge, the video is removed from the visible list immediately — before any API call. This creates a satisfying "flow state" where the list visually shrinks as the user works through it. The toast is a safety net. If the undo is clicked or the API fails, the video smoothly re-appears at its original position.
 
 **Cache update timing**: `chrome.storage.local` (bilisorter_videos, bilisorter_suggestions) is updated ONLY after the 5s window passes AND the API call succeeds. During the 5s window, the cache still contains the video — only the local React state has changed. This means if the popup closes during the 5s window, the video will reappear on next open (safe default).
@@ -288,6 +302,8 @@ User clicks "📤 导出 JSON"
 
 Export shape: `{ exportDate, sourceFolderId, sourceFolderName, videos: [{title, bvid, cover, upper, tags, fav_time, suggestions: [{folderName, confidence}]}] }`
 
+If the user exports before generating suggestions, the `suggestions` array for each video is empty (`[]`). Export always reflects current state — whatever is currently indexed and suggested.
+
 ### 6. Operation Log
 
 ```
@@ -301,7 +317,7 @@ User clicks "📋 操作日志"
 
 **Log entry shape**: `{ timestamp, videoTitle, bvid, fromFolderName, toFolderName }`
 
-`fromFolderName` and `toFolderName` are **snapshotted at operation time** (stored as strings, not resolved dynamically). If a folder is renamed after a move, the log still shows the original name at the time of the operation.
+`fromFolderName` is looked up from the cached folder list by folder ID at the time of the move. `toFolderName` is taken from the clicked suggestion badge's folder name. Both are **snapshotted** (stored as strings, not resolved dynamically). If a folder is renamed after a move, the log still shows the original name.
 
 **Storage**: `chrome.storage.local` key `bilisorter_operation_log`, JSON array, append-only. No size limit management in v0 (chrome.storage.local has 10MB limit; each entry is ~200 bytes, so ~50K operations before limit).
 
@@ -310,7 +326,7 @@ User clicks "📋 操作日志"
 ```
 Popup: collapsible ⚙️ Settings section (inline, toggled by gear icon in header):
 → Claude API Key: password input, saved to chrome.storage.local
-→ Model: select dropdown (claude-3-5-haiku-latest / claude-sonnet-4-20250514)
+→ Model: select dropdown (claude-3-5-haiku-latest / claude-sonnet-4-latest)
   → Default: haiku
 → Source folder: dropdown of all user's folders
   → Default: 默认收藏夹
@@ -380,6 +396,8 @@ No IndexedDB. `chrome.storage.local` is sufficient for the data volumes involved
 | AI suggestions all failed | Toast: "⚠️ AI 分析失败：{error}". Videos remain in list without badges. User can retry. |
 | AI partially failed (some batches ok) | Successful suggestions displayed. Failed batches: toast "部分视频分析失败，已跳过 N 个". Videos without suggestions show no badges. |
 
+**Button states across all conditions**: 📤 导出 is disabled when no indexed data exists. 📋 日志 is always enabled (shows "暂无操作记录" if log is empty). ⚙️ is always accessible in all states.
+
 ---
 
 ## UI Layout (Popup)
@@ -422,8 +440,12 @@ No IndexedDB. `chrome.storage.local` is sufficient for the data volumes involved
   - ≥80% — green bar
   - 50-79% — yellow/amber bar
   - <50% — grey bar (de-emphasized but still visible and clickable)
-  - Always 5 badges per video, visually ranked by confidence
+  - Up to min(5, available_folders) badges per video, visually ranked by confidence
 - Toasts: stacked vertically from bottom of popup, max 5 visible, auto-dismiss after 5s each
+- Scroll: header (username + source dropdown) and button bar are **sticky** at the top. Video list area scrolls independently (`overflow-y: auto`). No virtual scroll in v0.1
+- Video count: "{N} 个视频" label shown above the list area after indexing completes
+- Video title: clickable → opens B站 video page (`bilibili.com/video/{bvid}`) in new tab
+- Duplicate folder names: if multiple folders share the same name, display item count to disambiguate — e.g., "音乐 (42)" vs "音乐 (7)". Applies to source folder dropdown and AI suggestion badges
 
 ---
 
@@ -459,4 +481,4 @@ After indexing, scan all folders for videos that appear in multiple folders. Dis
 
 ---
 
-*Derived from discussion.md and research-log-n-suggestion.md | 2026-02*
+*Derived from initial-discussion-log.md and research-log-n-suggestion.md | 2026-02*
