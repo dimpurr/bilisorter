@@ -1,0 +1,21 @@
+{
+  "name": "bilisorter-ext",
+  "version": "0.1.0",
+  "description": "AI-powered Chrome extension to organize Bilibili favorites",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "wxt zip"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "wxt": "^0.17.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "typescript": "^5.3.0"
+  }
+}
